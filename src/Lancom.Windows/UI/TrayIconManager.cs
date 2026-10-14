@@ -91,10 +91,20 @@ public class TrayIconManager : IDisposable
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern IntPtr LoadIcon(IntPtr hInstance, IntPtr lpIconName);
 
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr GetModuleHandle(string? lpModuleName);
+
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     private static extern uint RegisterWindowMessage(string lpString);
 
     private static readonly uint WM_TASKBARCREATED = RegisterWindowMessage("TaskbarCreated");
+    private const uint WM_GETICON = 0x007F;
+    private const uint ICON_SMALL = 0;
+    private const uint ICON_BIG = 1;
+    private const uint ICON_SMALL2 = 2;
     #endregion
 
     #region Private Fields
@@ -172,7 +182,23 @@ public class TrayIconManager : IDisposable
 
             if (hIcon == IntPtr.Zero)
             {
-                hIcon = LoadIcon(IntPtr.Zero, IDI_APPLICATION);
+                hIcon = SendMessage(hwnd, WM_GETICON, (IntPtr)ICON_SMALL2, IntPtr.Zero);
+                if (hIcon == IntPtr.Zero)
+                {
+                    hIcon = SendMessage(hwnd, WM_GETICON, (IntPtr)ICON_SMALL, IntPtr.Zero);
+                }
+                if (hIcon == IntPtr.Zero)
+                {
+                    hIcon = SendMessage(hwnd, WM_GETICON, (IntPtr)ICON_BIG, IntPtr.Zero);
+                }
+                if (hIcon == IntPtr.Zero)
+                {
+                    hIcon = LoadIcon(GetModuleHandle(null), (IntPtr)32512);
+                }
+                if (hIcon == IntPtr.Zero)
+                {
+                    hIcon = LoadIcon(IntPtr.Zero, IDI_APPLICATION);
+                }
             }
             _hIcon = hIcon;
 
