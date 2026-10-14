@@ -15,7 +15,7 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo [1/2] Publishing Lancom (Cyber-Tactical HUD)...
-dotnet publish src\Lancom.App\Lancom.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -o dist\app
+dotnet publish src\Lancom.App\Lancom.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist\app
 
 echo.
 echo [2/2] Publishing Lancom.Relay (Corporate AP Isolation Bridge)...

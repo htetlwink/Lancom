@@ -142,7 +142,7 @@ lancom/
 ### On Windows:
 Double-click `scripts\publish-windows.bat` or run:
 ```cmd
-dotnet publish src\Lancom.App\Lancom.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -o dist\app
+dotnet publish src\Lancom.App\Lancom.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist\app
 dotnet publish src\Lancom.Relay\Lancom.Relay.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o dist\relay
 ```
 The output executables will be generated in:

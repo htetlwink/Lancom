@@ -13,7 +13,7 @@ echo "========================================================"
 $DOTNET_CMD build Lancom.sln -c Release
 
 echo "Publishing win-x64 Standalone Executables..."
-$DOTNET_CMD publish src/Lancom.App/Lancom.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -o ./dist/app
+$DOTNET_CMD publish src/Lancom.App/Lancom.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./dist/app
 $DOTNET_CMD publish src/Lancom.Relay/Lancom.Relay.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./dist/relay
 
 echo "Build and publish finished successfully!"
