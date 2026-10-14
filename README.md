@@ -12,8 +12,8 @@ Built with **C# / .NET 9**, **WPF**, **NAudio (WASAPI Shared)**, and **Concentus
 
 | Asset | Description | Download |
 | :--- | :--- | :--- |
-| **Lancom (GUI)** | Standalone single-file client. No installation required. | [**Download Lancom.exe**](https://github.com/htetlwink/Lancom/releases/latest/download/Lancom.exe) *(122 MB)* |
-| **Complete Bundle** | Includes both `Lancom.exe` and `Lancom.Relay.exe`. | [**Download Lancom-win-x64.zip**](https://github.com/htetlwink/Lancom/releases/latest/download/Lancom-v1.0.0-win-x64.zip) *(81 MB)* |
+| **Lancom (GUI)** | Standalone single-file client. No installation required. | [**Download Lancom.exe**](https://github.com/htetlwink/Lancom/releases/latest/download/Lancom.exe) *(130 MB)* |
+| **Complete Bundle** | Includes both `Lancom.exe` and `Lancom.Relay.exe`. | [**Download Lancom-win-x64.zip**](https://github.com/htetlwink/Lancom/releases/latest/download/Lancom-win-x64.zip) *(85 MB)* |
 
 > 💡 *Always grabs the newest version. You can also view all versions on the [**Releases Page**](https://github.com/htetlwink/Lancom/releases).*
 
