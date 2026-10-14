@@ -4,6 +4,19 @@
 
 Built with **C# / .NET 9**, **WPF**, **NAudio (WASAPI Shared)**, and **Concentus (Pure Managed Opus)**.
 
+[![Latest Release](https://img.shields.io/github/v/release/htetlwink/Lancom?color=10b981&label=Release&logo=github)](https://github.com/htetlwink/Lancom/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078d4?logo=windows)](https://github.com/htetlwink/Lancom/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+### 📥 Direct Downloads (Windows x64)
+
+| Asset | Description | Download |
+| :--- | :--- | :--- |
+| **Lancom (GUI)** | Standalone single-file client. No installation required. | [**Download Lancom.exe**](https://github.com/htetlwink/Lancom/releases/latest/download/Lancom.exe) *(122 MB)* |
+| **Complete Bundle** | Includes both `Lancom.exe` and `Lancom.Relay.exe`. | [**Download Lancom-win-x64.zip**](https://github.com/htetlwink/Lancom/releases/latest/download/Lancom-v1.0.0-win-x64.zip) *(81 MB)* |
+
+> 💡 *Always grabs the newest version. You can also view all versions on the [**Releases Page**](https://github.com/htetlwink/Lancom/releases).*
+
 ---
 
 ## 🌟 Key Features
@@ -60,7 +73,7 @@ Built with **C# / .NET 9**, **WPF**, **NAudio (WASAPI Shared)**, and **Concentus
 ## 🚀 Quick Start
 
 ### Standard Home or Unmanaged LAN
-1. Download or compile **`Lancom.exe`**.
+1. Download [**`Lancom.exe`**](https://github.com/htetlwink/Lancom/releases/latest/download/Lancom.exe) (or compile from source).
 2. Run `Lancom.exe` on two or more Windows machines connected to the same Wi-Fi or Ethernet network.
 3. Devices automatically discover each other via UDP presence beacons.
 4. Press and hold **Caps Lock** or **Mouse 4 (Side Thumb Button)** or click **HOLD TO TALK** to speak!
