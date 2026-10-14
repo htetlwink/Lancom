@@ -1,0 +1,71 @@
+name: Build & Package Lancom
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET SDK 9.0
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore Dependencies
+      run: dotnet restore Lancom.sln
+
+    - name: Build Solution (Release)
+      run: dotnet build Lancom.sln -c Release --no-restore
+
+    - name: Publish Lancom GUI Client
+      run: >
+        dotnet publish src/Lancom.App/Lancom.App.csproj 
+        -c Release 
+        -r win-x64 
+        --self-contained true 
+        -p:PublishSingleFile=true 
+        -p:IncludeNativeLibrariesForSelfExtract=false 
+        -o dist/app
+
+    - name: Publish Lancom Relay Server
+      run: >
+        dotnet publish src/Lancom.Relay/Lancom.Relay.csproj 
+        -c Release 
+        -r win-x64 
+        --self-contained true 
+        -p:PublishSingleFile=true 
+        -o dist/relay
+
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: Lancom-Windows-x64
+        path: |
+          dist/app/Lancom.exe
+          dist/relay/Lancom.Relay.exe
+
+    - name: Create Release Zip
+      if: startsWith(github.ref, 'refs/tags/v')
+      shell: pwsh
+      run: |
+        Compress-Archive -Path dist/app/Lancom.exe, dist/relay/Lancom.Relay.exe -DestinationPath Lancom-win-x64.zip
+
+    - name: Create GitHub Release
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: Lancom-win-x64.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

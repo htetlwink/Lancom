@@ -1,0 +1,27 @@
+## .NET Build Artifacts
+[Bb]in/
+[Oo]bj/
+dist/
+
+## Visual Studio & IDEs
+.vs/
+.vscode/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.sln.docstates
+
+## Debug & Profiler files
+*.pdb
+*.opendb
+
+## OS Specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Logs & Temp files
+*.log
+*.tmp
+*.temp
