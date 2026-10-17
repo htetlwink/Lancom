@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Channels;
 using Lancom.Core.Audio;
 using Whisper.net;
 using Whisper.net.Ggml;
+using Whisper.net.LibraryLoader;
 
 namespace Lancom.App.Subtitles;
 
@@ -31,6 +34,7 @@ public sealed class SpeechToTextService : IDisposable, IAsyncDisposable
     private WhisperFactory? _whisperFactory;
     private WhisperProcessor? _whisperProcessor;
     private bool _isDisposed;
+    private static bool _resolverRegistered;
 
     public bool IsEnabled { get; set; } = true;
     public bool IsModelLoaded { get; private set; }
@@ -105,6 +109,12 @@ public sealed class SpeechToTextService : IDisposable, IAsyncDisposable
 
             IsModelLoaded = true;
             ModelStatus = "Model Ready";
+        }
+        catch (DllNotFoundException dnfEx)
+        {
+            IsModelLoaded = false;
+            ModelStatus = $"Missing VC++ Runtime: {dnfEx.Message}. Install Microsoft Visual C++ 2015-2022 Redistributable (x64).";
+            Debug.WriteLine($"[SpeechToTextService] DLL load failure: {dnfEx}");
         }
         catch (OperationCanceledException)
         {
@@ -197,18 +207,26 @@ public sealed class SpeechToTextService : IDisposable, IAsyncDisposable
 
     private static void EnsureNativeRuntimesExtracted(string lancomBaseDir)
     {
-        try
+        string runtimesWinX64 = Path.Combine(lancomBaseDir, "runtimes", "win-x64");
+        Directory.CreateDirectory(runtimesWinX64);
+
+        string appDir = AppDomain.CurrentDomain.BaseDirectory;
+        string appRuntimes = Path.Combine(appDir, "runtimes", "win-x64");
+
+        var assembly = typeof(SpeechToTextService).Assembly;
+        string[] files = ["ggml-base-whisper.dll", "ggml-cpu-whisper.dll", "ggml-whisper.dll", "whisper.dll"];
+
+        foreach (var file in files)
         {
-            string runtimesWinX64 = Path.Combine(lancomBaseDir, "runtimes", "win-x64");
-            Directory.CreateDirectory(runtimesWinX64);
-
-            var assembly = typeof(SpeechToTextService).Assembly;
-            string[] files = ["ggml-base-whisper.dll", "ggml-cpu-whisper.dll", "ggml-whisper.dll", "whisper.dll"];
-
-            foreach (var file in files)
+            string targetPath = Path.Combine(runtimesWinX64, file);
+            if (!File.Exists(targetPath) || new FileInfo(targetPath).Length == 0)
             {
-                string targetPath = Path.Combine(runtimesWinX64, file);
-                if (!File.Exists(targetPath) || new FileInfo(targetPath).Length == 0)
+                string localAppFile = Path.Combine(appRuntimes, file);
+                if (File.Exists(localAppFile))
+                {
+                    File.Copy(localAppFile, targetPath, overwrite: true);
+                }
+                else
                 {
                     string resourceName = $"Lancom.App.runtimes.win_x64.{file}";
                     using var stream = assembly.GetManifestResourceStream(resourceName);
@@ -219,15 +237,57 @@ public sealed class SpeechToTextService : IDisposable, IAsyncDisposable
                     }
                 }
             }
+        }
 
-            // Point Whisper.net to the extracted runtimes directory
-            Whisper.net.LibraryLoader.RuntimeOptions.LibraryPath = Path.Combine(lancomBaseDir, "runtimes.sentinel");
-            Whisper.net.LibraryLoader.RuntimeOptions.RuntimeLibraryOrder = [Whisper.net.LibraryLoader.RuntimeLibrary.Cpu];
-        }
-        catch (Exception ex)
+        // Determine which directory has valid whisper binaries
+        string chosenDir = runtimesWinX64;
+        if (File.Exists(Path.Combine(appRuntimes, "whisper.dll")))
         {
-            Debug.WriteLine($"[SpeechToTextService] Failed to extract native runtimes: {ex.Message}");
+            chosenDir = appRuntimes;
         }
+
+        // Pre-load native dependencies in exact dependency order so Windows and Whisper.net resolve them
+        string[] loadOrder = ["ggml-base-whisper.dll", "ggml-cpu-whisper.dll", "ggml-whisper.dll", "whisper.dll"];
+        IntPtr whisperHandle = IntPtr.Zero;
+
+        foreach (var file in loadOrder)
+        {
+            string filePath = Path.Combine(chosenDir, file);
+            if (File.Exists(filePath))
+            {
+                var handle = NativeLibrary.Load(filePath);
+                if (file == "whisper.dll")
+                {
+                    whisperHandle = handle;
+                }
+            }
+        }
+
+        if (whisperHandle != IntPtr.Zero)
+        {
+            lock (typeof(SpeechToTextService))
+            {
+                if (!_resolverRegistered)
+                {
+                    NativeLibrary.SetDllImportResolver(typeof(WhisperFactory).Assembly, (libraryName, asm, searchPath) =>
+                    {
+                        if (libraryName == "whisper" || libraryName == "libwhisper" || libraryName == "whisper.dll")
+                        {
+                            return whisperHandle;
+                        }
+                        return IntPtr.Zero;
+                    });
+                    _resolverRegistered = true;
+                }
+            }
+
+            // Tell Whisper.net that the library is already loaded into process memory
+            RuntimeOptions.LoadedLibrary = RuntimeLibrary.Cpu;
+        }
+
+        // Also configure default search paths as standard fallback
+        RuntimeOptions.LibraryPath = Path.Combine(lancomBaseDir, "runtimes.sentinel");
+        RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cpu];
     }
 
     public void Dispose()

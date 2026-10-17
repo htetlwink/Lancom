@@ -30,14 +30,11 @@ jobs:
       run: dotnet build Lancom.sln -c Release --no-restore
 
     - name: Publish Lancom GUI Client
-      run: >
-        dotnet publish src/Lancom.App/Lancom.App.csproj 
-        -c Release 
-        -r win-x64 
-        --self-contained true 
-        -p:PublishSingleFile=true 
-        -p:IncludeNativeLibrariesForSelfExtract=true 
-        -o dist/app
+      shell: pwsh
+      run: |
+        dotnet publish src/Lancom.App/Lancom.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist/app
+        New-Item -ItemType Directory -Force -Path dist/app/runtimes/win-x64
+        Copy-Item -Path "$env:USERPROFILE\.nuget\packages\whisper.net.runtime\1.9.1\build\win-x64\*" -Destination dist/app/runtimes/win-x64 -Force
 
     - name: Publish Lancom Relay Server
       run: >
@@ -54,13 +51,14 @@ jobs:
         name: Lancom-Windows-x64
         path: |
           dist/app/Lancom.exe
+          dist/app/runtimes/**
           dist/relay/Lancom.Relay.exe
 
     - name: Create Release Zip
       if: startsWith(github.ref, 'refs/tags/v')
       shell: pwsh
       run: |
-        Compress-Archive -Path dist/app/Lancom.exe, dist/relay/Lancom.Relay.exe -DestinationPath Lancom-win-x64.zip
+        Compress-Archive -Path dist/app/*, dist/relay/Lancom.Relay.exe -DestinationPath Lancom-win-x64.zip
 
     - name: Create GitHub Release
       if: startsWith(github.ref, 'refs/tags/v')
