@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
 using System.Text;
+using System.Text.Json;
+using Lancom.Core.Messaging;
 
 namespace Lancom.Core.Packets;
 
@@ -14,7 +16,13 @@ public enum MessageType : byte
     PageAlert = 7,
     WhisperVoice = 8,
     WhisperPttStart = 9,
-    WhisperPttEnd = 10
+    WhisperPttEnd = 10,
+    TextMessage = 20,
+    MessageAck = 21,
+    FileOffer = 22,
+    FileOfferAnswer = 23,
+    FileChunk = 24,
+    FileChunkAck = 25
 }
 
 public class LancomPacket
@@ -47,7 +55,10 @@ public class LancomPacket
         byte[] payload = Payload ?? Array.Empty<byte>();
 
         if (TargetUserId != Guid.Empty &&
-            (Type == MessageType.WhisperVoice || Type == MessageType.WhisperPttStart || Type == MessageType.WhisperPttEnd))
+            (Type == MessageType.WhisperVoice || Type == MessageType.WhisperPttStart || Type == MessageType.WhisperPttEnd ||
+             Type == MessageType.TextMessage || Type == MessageType.MessageAck ||
+             Type == MessageType.FileOffer || Type == MessageType.FileOfferAnswer ||
+             Type == MessageType.FileChunk || Type == MessageType.FileChunkAck))
         {
             Flags |= FlagWhisper;
             byte[] whisperPayload = new byte[16 + payload.Length];
@@ -359,5 +370,213 @@ public class LancomPacket
         }
 
         return TryParseBeaconPayload(packet.Payload, out displayName, out audioPort, out isAfk, out afkMinutes);
+    }
+
+    public static LancomPacket CreateTextMessage(Guid senderId, Guid targetUserId, byte channelId, TextMessagePayload payload, bool isEncrypted = false)
+    {
+        byte[] jsonBytes = JsonSerializer.SerializeToUtf8Bytes(payload);
+        byte flags = 0;
+        if (targetUserId != Guid.Empty) flags |= FlagWhisper;
+        if (isEncrypted) flags |= FlagEncrypted;
+
+        return new LancomPacket
+        {
+            Type = MessageType.TextMessage,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            Flags = flags,
+            TimestampMs = payload.TimestampMs != 0 ? payload.TimestampMs : (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Payload = jsonBytes
+        };
+    }
+
+    public static bool TryParseTextMessage(LancomPacket packet, out TextMessagePayload? payload)
+    {
+        payload = null;
+        if (packet == null || packet.Type != MessageType.TextMessage || packet.Payload == null || packet.Payload.Length == 0)
+            return false;
+
+        try
+        {
+            payload = JsonSerializer.Deserialize<TextMessagePayload>(packet.Payload);
+            return payload != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static LancomPacket CreateMessageAck(Guid senderId, Guid targetUserId, byte channelId, Guid messageId)
+    {
+        byte[] jsonBytes = JsonSerializer.SerializeToUtf8Bytes(new MessageAckPayload { MessageId = messageId });
+        byte flags = 0;
+        if (targetUserId != Guid.Empty) flags |= FlagWhisper;
+
+        return new LancomPacket
+        {
+            Type = MessageType.MessageAck,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            Flags = flags,
+            TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Payload = jsonBytes
+        };
+    }
+
+    public static bool TryParseMessageAck(LancomPacket packet, out Guid messageId)
+    {
+        messageId = Guid.Empty;
+        if (packet == null || packet.Type != MessageType.MessageAck || packet.Payload == null || packet.Payload.Length == 0)
+            return false;
+
+        try
+        {
+            var ack = JsonSerializer.Deserialize<MessageAckPayload>(packet.Payload);
+            if (ack != null)
+            {
+                messageId = ack.MessageId;
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    public static LancomPacket CreateFileOffer(Guid senderId, Guid targetUserId, byte channelId, FileOfferPayload payload, bool isEncrypted = false)
+    {
+        byte[] jsonBytes = JsonSerializer.SerializeToUtf8Bytes(payload);
+        byte flags = 0;
+        if (targetUserId != Guid.Empty) flags |= FlagWhisper;
+        if (isEncrypted) flags |= FlagEncrypted;
+
+        return new LancomPacket
+        {
+            Type = MessageType.FileOffer,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            Flags = flags,
+            TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Payload = jsonBytes
+        };
+    }
+
+    public static bool TryParseFileOffer(LancomPacket packet, out FileOfferPayload? payload)
+    {
+        payload = null;
+        if (packet == null || packet.Type != MessageType.FileOffer || packet.Payload == null || packet.Payload.Length == 0)
+            return false;
+
+        try
+        {
+            payload = JsonSerializer.Deserialize<FileOfferPayload>(packet.Payload);
+            return payload != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static LancomPacket CreateFileOfferAnswer(Guid senderId, Guid targetUserId, byte channelId, Guid transferId, bool accepted)
+    {
+        byte[] jsonBytes = JsonSerializer.SerializeToUtf8Bytes(new FileOfferAnswerPayload { TransferId = transferId, Accepted = accepted });
+        byte flags = 0;
+        if (targetUserId != Guid.Empty) flags |= FlagWhisper;
+
+        return new LancomPacket
+        {
+            Type = MessageType.FileOfferAnswer,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            Flags = flags,
+            TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Payload = jsonBytes
+        };
+    }
+
+    public static bool TryParseFileOfferAnswer(LancomPacket packet, out Guid transferId, out bool accepted)
+    {
+        transferId = Guid.Empty;
+        accepted = false;
+        if (packet == null || packet.Type != MessageType.FileOfferAnswer || packet.Payload == null || packet.Payload.Length == 0)
+            return false;
+
+        try
+        {
+            var ans = JsonSerializer.Deserialize<FileOfferAnswerPayload>(packet.Payload);
+            if (ans != null)
+            {
+                transferId = ans.TransferId;
+                accepted = ans.Accepted;
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    public static LancomPacket CreateFileChunk(Guid senderId, Guid targetUserId, byte channelId, Guid transferId, int chunkIndex, int totalChunks, byte[] chunkData, bool isEncrypted = false)
+    {
+        byte[] rawChunk = FileChunkSerializer.Serialize(transferId, chunkIndex, totalChunks, chunkData);
+        byte flags = 0;
+        if (targetUserId != Guid.Empty) flags |= FlagWhisper;
+        if (isEncrypted) flags |= FlagEncrypted;
+
+        return new LancomPacket
+        {
+            Type = MessageType.FileChunk,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            Flags = flags,
+            TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Payload = rawChunk
+        };
+    }
+
+    public static LancomPacket CreateFileChunkAck(Guid senderId, Guid targetUserId, byte channelId, Guid transferId, int chunkIndex, bool isComplete)
+    {
+        byte[] jsonBytes = JsonSerializer.SerializeToUtf8Bytes(new FileChunkAckPayload { TransferId = transferId, ChunkIndex = chunkIndex, IsComplete = isComplete });
+        byte flags = 0;
+        if (targetUserId != Guid.Empty) flags |= FlagWhisper;
+
+        return new LancomPacket
+        {
+            Type = MessageType.FileChunkAck,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            Flags = flags,
+            TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Payload = jsonBytes
+        };
+    }
+
+    public static bool TryParseFileChunkAck(LancomPacket packet, out Guid transferId, out int chunkIndex, out bool isComplete)
+    {
+        transferId = Guid.Empty;
+        chunkIndex = 0;
+        isComplete = false;
+        if (packet == null || packet.Type != MessageType.FileChunkAck || packet.Payload == null || packet.Payload.Length == 0)
+            return false;
+
+        try
+        {
+            var ack = JsonSerializer.Deserialize<FileChunkAckPayload>(packet.Payload);
+            if (ack != null)
+            {
+                transferId = ack.TransferId;
+                chunkIndex = ack.ChunkIndex;
+                isComplete = ack.IsComplete;
+                return true;
+            }
+        }
+        catch { }
+        return false;
     }
 }

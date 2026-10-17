@@ -4,15 +4,21 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="clr-namespace:Lancom.App.ViewModels"
+        xmlns:utils="clr-namespace:Lancom.App.Utils"
         mc:Ignorable="d"
-        Title="Lancom" Height="660" Width="440"
+        Title="Lancom" Height="720" Width="440"
         Icon="app.ico"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ResizeMode="NoResize" Topmost="True" WindowStartupLocation="CenterScreen"
+        AllowDrop="True" DragOver="Window_DragOver" Drop="Window_Drop"
         PreviewMouseDown="Window_PreviewMouseDown" PreviewKeyDown="Window_PreviewKeyDown"
         Closing="Window_Closing">
 
     <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <utils:Base64ImageConverter x:Key="Base64ImageConverter" />
+        <utils:NullOrEmptyToVisibilityConverter x:Key="NullOrEmptyToVisibilityConverter" />
+
         <Style x:Key="ChannelButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="#252834" />
             <Setter Property="Foreground" Value="#E0E3EA" />
@@ -307,76 +313,410 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Online Peers Roster -->
+                <!-- Lower Command Deck (Tabbed Switcher: Roster vs Chat & Files) -->
                 <Border Grid.Row="2" Background="{StaticResource BrushBgCard}" 
-                        CornerRadius="10" Padding="12" Margin="0,0,0,14">
+                        CornerRadius="10" Padding="10" Margin="0,0,0,10">
                     <Grid>
                         <Grid.RowDefinitions>
+                            <!-- Tab Switcher Bar -->
                             <RowDefinition Height="Auto" />
+                            <!-- Content Area -->
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                            <TextBlock Text="ONLINE COLLEAGUES" FontSize="11" FontWeight="Bold" Foreground="{StaticResource BrushTextMuted}" />
-                            <TextBlock Text="{Binding OnlinePeerCount, StringFormat=' ({0})'}" FontSize="11" Foreground="{StaticResource BrushAccentEmerald}" FontWeight="Bold" />
-                        </StackPanel>
+                        <!-- Tab Switcher Bar -->
+                        <Border Grid.Row="0" Background="#161821" CornerRadius="8" Padding="3" Margin="0,0,0,10">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
 
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                            <ItemsControl ItemsSource="{Binding Peers}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Background="#252833" CornerRadius="6" Padding="8,6" Margin="0,2">
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                
-                                                <!-- Status Dot: Amber when AFK, Emerald when Active -->
-                                                <Ellipse Grid.Column="0" Width="8" Height="8" Margin="0,0,8,0" VerticalAlignment="Center">
-                                                    <Ellipse.Style>
-                                                        <Style TargetType="Ellipse">
-                                                            <Setter Property="Fill" Value="{StaticResource BrushAccentEmerald}" />
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsAfk}" Value="True">
-                                                                    <Setter Property="Fill" Value="{StaticResource BrushAccentAmber}" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Ellipse.Style>
-                                                </Ellipse>
-                                                
-                                                <!-- Display Name + AFK status -->
-                                                <TextBlock Grid.Column="1" Text="{Binding StatusDisplay}" 
-                                                           Foreground="{StaticResource BrushTextPrimary}" FontSize="12" 
-                                                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                                
-                                                <!-- Channel Tag -->
-                                                <TextBlock Grid.Column="2" Text="{Binding ChannelId, StringFormat='CH {0:D2}'}" 
-                                                           Foreground="{StaticResource BrushTextMuted}" FontSize="11" 
-                                                           VerticalAlignment="Center" Margin="0,0,8,0" />
-                                                
-                                                <!-- Targeted Mention / Page & Whisper Buttons -->
-                                                <StackPanel Grid.Column="3" Orientation="Horizontal">
-                                                    <Button Content="🟣 WHISPER" Click="WhisperPeer_Click"
-                                                            Background="#2A1733" Foreground="#E879F9" 
-                                                            BorderBrush="#4C255E" BorderThickness="1"
-                                                            Padding="6,2" FontSize="10" FontWeight="Bold" Cursor="Hand" Margin="0,0,4,0"
-                                                            ToolTip="Open a 1-on-1 private walkie-talkie line with this colleague" />
-                                                    <Button Content="🔔 PAGE" Click="PagePeer_Click"
-                                                            Background="#1E2330" Foreground="{StaticResource BrushAccentAmber}" 
-                                                            BorderBrush="#363C4E" BorderThickness="1"
-                                                            Padding="6,2" FontSize="10" FontWeight="Bold" Cursor="Hand"
-                                                            ToolTip="Send an urgent paging alert sound and notification to this colleague" />
-                                                </StackPanel>
-                                            </Grid>
+                                <!-- Roster Tab Button -->
+                                <Button Grid.Column="0" Click="RosterTab_Click" Margin="0,0,2,0">
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Setter Property="BorderThickness" Value="0" />
+                                            <Setter Property="Padding" Value="0,6" />
+                                            <Setter Property="Cursor" Value="Hand" />
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                            <Setter Property="FontSize" Value="11" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsRosterTabActive}" Value="True">
+                                                    <Setter Property="Background" Value="#252834" />
+                                                    <Setter Property="Foreground" Value="{StaticResource BrushAccentEmerald}" />
+                                                    <Setter Property="FontWeight" Value="Bold" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <TextBlock Text="👥 ROSTER" />
+                                        <TextBlock Text="{Binding OnlinePeerCount, StringFormat=' ({0})'}" />
+                                    </StackPanel>
+                                </Button>
+
+                                <!-- Chat & Files Tab Button -->
+                                <Button Grid.Column="1" Click="ChatTab_Click" Margin="2,0,0,0">
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Setter Property="BorderThickness" Value="0" />
+                                            <Setter Property="Padding" Value="0,6" />
+                                            <Setter Property="Cursor" Value="Hand" />
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                            <Setter Property="FontSize" Value="11" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChatTabActive}" Value="True">
+                                                    <Setter Property="Background" Value="#252834" />
+                                                    <Setter Property="Foreground" Value="{StaticResource BrushAccentEmerald}" />
+                                                    <Setter Property="FontWeight" Value="Bold" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding HasUnreadChat}" Value="True">
+                                                    <Setter Property="Foreground" Value="{StaticResource BrushAccentAmber}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <TextBlock Text="{Binding ChatTabHeader}" />
+                                        <Ellipse Width="6" Height="6" Fill="{StaticResource BrushAccentAmber}" Margin="6,0,0,0" VerticalAlignment="Center">
+                                            <Ellipse.Style>
+                                                <Style TargetType="Ellipse">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding HasUnreadChat}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Ellipse.Style>
+                                        </Ellipse>
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </Border>
+
+                        <!-- Content Area (Row 1) -->
+                        <Grid Grid.Row="1">
+                            <!-- ============================================== -->
+                            <!-- TAB 1: ONLINE COLLEAGUES ROSTER                -->
+                            <!-- ============================================== -->
+                            <Grid Visibility="{Binding IsRosterTabActive, Converter={StaticResource BoolToVis}}">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="ONLINE COLLEAGUES" FontSize="11" FontWeight="Bold" Foreground="{StaticResource BrushTextMuted}" />
+                                    <TextBlock Text="{Binding OnlinePeerCount, StringFormat=' ({0})'}" FontSize="11" Foreground="{StaticResource BrushAccentEmerald}" FontWeight="Bold" />
+                                </StackPanel>
+
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl ItemsSource="{Binding Peers}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="#252833" CornerRadius="6" Padding="8,6" Margin="0,2">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        
+                                                        <!-- Status Dot: Amber when AFK, Emerald when Active -->
+                                                        <Ellipse Grid.Column="0" Width="8" Height="8" Margin="0,0,8,0" VerticalAlignment="Center">
+                                                            <Ellipse.Style>
+                                                                <Style TargetType="Ellipse">
+                                                                    <Setter Property="Fill" Value="{StaticResource BrushAccentEmerald}" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsAfk}" Value="True">
+                                                                            <Setter Property="Fill" Value="{StaticResource BrushAccentAmber}" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Ellipse.Style>
+                                                        </Ellipse>
+                                                        
+                                                        <!-- Display Name + AFK status -->
+                                                        <TextBlock Grid.Column="1" Text="{Binding StatusDisplay}" 
+                                                                   Foreground="{StaticResource BrushTextPrimary}" FontSize="12" 
+                                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                        
+                                                        <!-- Channel Tag -->
+                                                        <TextBlock Grid.Column="2" Text="{Binding ChannelId, StringFormat='CH {0:D2}'}" 
+                                                                   Foreground="{StaticResource BrushTextMuted}" FontSize="11" 
+                                                                   VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                        
+                                                        <!-- Targeted Mention / Page & Whisper Buttons -->
+                                                        <StackPanel Grid.Column="3" Orientation="Horizontal">
+                                                            <Button Content="🟣 WHISPER" Click="WhisperPeer_Click"
+                                                                    Background="#2A1733" Foreground="#E879F9" 
+                                                                    BorderBrush="#4C255E" BorderThickness="1"
+                                                                    Padding="6,2" FontSize="10" FontWeight="Bold" Cursor="Hand" Margin="0,0,4,0"
+                                                                    ToolTip="Open a 1-on-1 private walkie-talkie line with this colleague" />
+                                                            <Button Content="🔔 PAGE" Click="PagePeer_Click"
+                                                                    Background="#1E2330" Foreground="{StaticResource BrushAccentAmber}" 
+                                                                    BorderBrush="#363C4E" BorderThickness="1"
+                                                                    Padding="6,2" FontSize="10" FontWeight="Bold" Cursor="Hand"
+                                                                    ToolTip="Send an urgent paging alert sound and notification to this colleague" />
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+
+                            <!-- ============================================== -->
+                            <!-- TAB 2: INSTANT MESSAGING & FILE TRANSFERS      -->
+                            <!-- ============================================== -->
+                            <Grid Visibility="{Binding IsChatTabActive, Converter={StaticResource BoolToVis}}">
+                                <Grid.RowDefinitions>
+                                    <!-- Chat Target & Folder Bar -->
+                                    <RowDefinition Height="Auto" />
+                                    <!-- Messages Stream -->
+                                    <RowDefinition Height="*" />
+                                    <!-- Bottom Input Bar -->
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <!-- Chat Target Header & Downloads Folder Button -->
+                                <Grid Grid.Row="0" Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="SENDING TO:" FontSize="10" FontWeight="Bold" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                        <Border Background="#1C2321" BorderBrush="#2D483A" BorderThickness="1" CornerRadius="4" Padding="6,2">
+                                            <TextBlock Text="{Binding CurrentChatTargetDisplay}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource BrushAccentEmerald}" />
                                         </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </ScrollViewer>
+                                    </StackPanel>
+
+                                    <Button Grid.Column="1" Content="📁 Downloads" Click="OpenDownloadsFolder_Click"
+                                            Background="#252834" Foreground="{StaticResource BrushTextMuted}" BorderThickness="0"
+                                            Padding="8,3" FontSize="10" Cursor="Hand" ToolTip="Open received downloads directory" />
+                                </Grid>
+
+                                <!-- Messages Stream ScrollViewer -->
+                                <Grid Grid.Row="1">
+                                    <ScrollViewer x:Name="ChatScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                        <ItemsControl ItemsSource="{Binding DisplayMessages}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border BorderThickness="1" Padding="9,7">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="HorizontalAlignment" Value="Left" />
+                                                                <Setter Property="Background" Value="#20232D" />
+                                                                <Setter Property="BorderBrush" Value="#303545" />
+                                                                <Setter Property="CornerRadius" Value="10,10,10,2" />
+                                                                <Setter Property="Margin" Value="2,3,28,3" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsOutgoing}" Value="True">
+                                                                        <Setter Property="HorizontalAlignment" Value="Right" />
+                                                                        <Setter Property="Background" Value="#173123" />
+                                                                        <Setter Property="BorderBrush" Value="#25543A" />
+                                                                        <Setter Property="CornerRadius" Value="10,10,2,10" />
+                                                                        <Setter Property="Margin" Value="28,3,2,3" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+
+                                                        <Grid>
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="Auto" />
+                                                            </Grid.RowDefinitions>
+
+                                                            <!-- Header: Sender, Badges, Time, Ack -->
+                                                            <Grid Grid.Row="0" Margin="0,0,0,4">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+
+                                                                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                                                    <TextBlock Text="{Binding SenderName}" FontWeight="Bold" FontSize="11" Margin="0,0,6,0">
+                                                                        <TextBlock.Style>
+                                                                            <Style TargetType="TextBlock">
+                                                                                <Setter Property="Foreground" Value="{StaticResource BrushAccentEmerald}" />
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding IsOutgoing}" Value="True">
+                                                                                        <Setter Property="Foreground" Value="#6EE7B7" />
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </TextBlock.Style>
+                                                                    </TextBlock>
+
+                                                                    <Border Visibility="{Binding IsWhisper, Converter={StaticResource BoolToVis}}" 
+                                                                            Background="#3A1747" CornerRadius="3" Padding="4,1" Margin="0,0,4,0">
+                                                                        <TextBlock Text="PRIVATE" FontSize="9" FontWeight="Bold" Foreground="#E879F9" />
+                                                                    </Border>
+
+                                                                    <TextBlock Visibility="{Binding IsEncrypted, Converter={StaticResource BoolToVis}}" 
+                                                                               Text="🔒" FontSize="10" ToolTip="End-to-End Encrypted (AES-256-GCM)" Margin="0,0,4,0" />
+                                                                </StackPanel>
+
+                                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                                    <TextBlock Text="{Binding FormattedTime}" FontSize="9" Foreground="{StaticResource BrushTextMuted}" Margin="0,0,4,0" />
+                                                                    <TextBlock Text="✓" FontSize="9" FontWeight="Bold" ToolTip="Delivered">
+                                                                        <TextBlock.Style>
+                                                                            <Style TargetType="TextBlock">
+                                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                                <Style.Triggers>
+                                                                                    <MultiDataTrigger>
+                                                                                        <MultiDataTrigger.Conditions>
+                                                                                            <Condition Binding="{Binding IsOutgoing}" Value="True" />
+                                                                                            <Condition Binding="{Binding IsDelivered}" Value="True" />
+                                                                                        </MultiDataTrigger.Conditions>
+                                                                                        <Setter Property="Visibility" Value="Visible" />
+                                                                                        <Setter Property="Foreground" Value="{StaticResource BrushAccentEmerald}" />
+                                                                                    </MultiDataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </TextBlock.Style>
+                                                                    </TextBlock>
+                                                                </StackPanel>
+                                                            </Grid>
+
+                                                            <!-- Text Message Body -->
+                                                            <TextBlock Grid.Row="1" Text="{Binding Text}" 
+                                                                       Visibility="{Binding Text, Converter={StaticResource NullOrEmptyToVisibilityConverter}}"
+                                                                       TextWrapping="Wrap" Foreground="#F0F2F5" FontSize="12" LineHeight="16" Margin="0,1,0,2" />
+
+                                                            <!-- Attachment Card (Photos, Videos, Files) -->
+                                                            <Border Grid.Row="2" Visibility="{Binding HasAttachment, Converter={StaticResource BoolToVis}}" 
+                                                                    Background="#12141A" BorderBrush="#252936" BorderThickness="1" CornerRadius="6" Padding="6" Margin="0,4,0,0">
+                                                                <StackPanel>
+                                                                    <!-- In-Line Image Preview Thumbnail (Photos) -->
+                                                                    <Border Visibility="{Binding IsImage, Converter={StaticResource BoolToVis}}" 
+                                                                            CornerRadius="4" ClipToBounds="True" Background="#0C0D10" Margin="0,0,0,6">
+                                                                        <Image Source="{Binding ThumbnailBase64, Converter={StaticResource Base64ImageConverter}}" 
+                                                                               MaxHeight="140" MaxWidth="220" Stretch="Uniform" Cursor="Hand" 
+                                                                               MouseLeftButtonDown="Image_MouseLeftButtonDown"
+                                                                               ToolTip="Click to open image" />
+                                                                    </Border>
+
+                                                                    <!-- File Info Row -->
+                                                                    <Grid>
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                            <ColumnDefinition Width="*" />
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                        </Grid.ColumnDefinitions>
+
+                                                                        <TextBlock Grid.Column="0" FontSize="16" VerticalAlignment="Center" Margin="0,0,8,0">
+                                                                            <TextBlock.Style>
+                                                                                <Style TargetType="TextBlock">
+                                                                                    <Setter Property="Text" Value="📄" />
+                                                                                    <Style.Triggers>
+                                                                                        <DataTrigger Binding="{Binding IsImage}" Value="True">
+                                                                                            <Setter Property="Text" Value="🖼️" />
+                                                                                        </DataTrigger>
+                                                                                        <DataTrigger Binding="{Binding IsVideo}" Value="True">
+                                                                                            <Setter Property="Text" Value="🎬" />
+                                                                                        </DataTrigger>
+                                                                                    </Style.Triggers>
+                                                                                </Style>
+                                                                            </TextBlock.Style>
+                                                                        </TextBlock>
+
+                                                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                                            <TextBlock Text="{Binding FileName}" FontWeight="Bold" FontSize="11" Foreground="#F0F2F5" TextTrimming="CharacterEllipsis" />
+                                                                            <TextBlock Text="{Binding FormattedSize}" FontSize="10" Foreground="{StaticResource BrushTextMuted}" />
+                                                                        </StackPanel>
+
+                                                                        <!-- Completed Actions: Open File -->
+                                                                        <StackPanel Grid.Column="2" Orientation="Horizontal" Visibility="{Binding IsTransferCompleted, Converter={StaticResource BoolToVis}}">
+                                                                            <Button Content="Open" Click="OpenFile_Click"
+                                                                                    Background="#252834" Foreground="{StaticResource BrushAccentEmerald}" 
+                                                                                    BorderBrush="#384052" BorderThickness="1" Padding="7,2" FontSize="10" FontWeight="Bold" Cursor="Hand"
+                                                                                    ToolTip="Open file in default application" />
+                                                                        </StackPanel>
+                                                                    </Grid>
+
+                                                                    <!-- Real-Time Transfer Progress Bar -->
+                                                                    <StackPanel Visibility="{Binding IsFileTransferInProgress, Converter={StaticResource BoolToVis}}" Margin="0,6,0,0">
+                                                                        <Grid Margin="0,0,0,2">
+                                                                            <TextBlock Text="Transferring..." FontSize="9" Foreground="{StaticResource BrushAccentAmber}" HorizontalAlignment="Left" />
+                                                                            <TextBlock Text="{Binding TransferPercentText}" FontSize="9" Foreground="{StaticResource BrushAccentAmber}" HorizontalAlignment="Right" />
+                                                                        </Grid>
+                                                                        <ProgressBar Value="{Binding TransferProgress, Mode=OneWay}" Minimum="0" Maximum="1" Height="4" 
+                                                                                     Foreground="{StaticResource BrushAccentEmerald}" Background="#20232B" BorderThickness="0" />
+                                                                    </StackPanel>
+
+                                                                    <!-- Transfer Failure Notice -->
+                                                                    <TextBlock Visibility="{Binding IsTransferFailed, Converter={StaticResource BoolToVis}}" 
+                                                                               Text="⚠️ Transfer failed" FontSize="10" Foreground="#FF6B72" Margin="0,4,0,0" />
+                                                                </StackPanel>
+                                                            </Border>
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+
+                                    <!-- Empty State Hint -->
+                                    <TextBlock Text="No messages yet. Drop files or type below to chat." 
+                                               Foreground="#505464" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding DisplayMessages.Count}" Value="0">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+
+                                <!-- Bottom Chat Input Bar -->
+                                <Border Grid.Row="2" Background="#161821" BorderBrush="#2C303E" BorderThickness="1" CornerRadius="8" Padding="5" Margin="0,6,0,0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- Attachment Button -->
+                                        <Button Grid.Column="0" Content="📎" Click="AttachFile_Click" 
+                                                Width="30" Height="28" Margin="0,0,6,0"
+                                                Background="#232632" Foreground="#A0A5B5" BorderThickness="0" 
+                                                FontSize="13" Cursor="Hand" ToolTip="Send file, photo, or video (or drop files onto window)" />
+
+                                        <!-- Chat Input TextBox -->
+                                        <TextBox Grid.Column="1" x:Name="ChatInputTextBox" 
+                                                 Text="{Binding ChatInputText, UpdateSourceTrigger=PropertyChanged}" 
+                                                 PreviewKeyDown="ChatInputTextBox_PreviewKeyDown"
+                                                 Height="28" Padding="8,4" Background="#121316" Foreground="#F0F2F5" 
+                                                 BorderBrush="#2B2E3A" BorderThickness="1" FontSize="11" VerticalContentAlignment="Center" />
+
+                                        <!-- Send Button -->
+                                        <Button Grid.Column="2" Content="➤" Click="SendMessage_Click" 
+                                                Width="32" Height="28" Margin="6,0,0,0"
+                                                Background="{StaticResource BrushAccentEmerald}" Foreground="#121316" 
+                                                FontWeight="Bold" BorderThickness="0" FontSize="12" Cursor="Hand" 
+                                                ToolTip="Send message (Enter)" />
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </Grid>
                     </Grid>
                 </Border>
             </Grid>

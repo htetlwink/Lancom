@@ -80,6 +80,20 @@ public static class SfxGenerator
         return result;
     }
 
+    public static byte[] GenerateMessageChime(float volume = 0.45f)
+    {
+        // Crisp, high-tech tactical double bell: 1046Hz for 60ms, 30ms silence, 1568Hz for 100ms
+        byte[] tone1 = GenerateSingleTone(1046, 60, volume);
+        byte[] silence = new byte[AudioConfig.SampleRate * 30 / 1000 * 2];
+        byte[] tone2 = GenerateSingleTone(1568, 100, volume);
+
+        byte[] result = new byte[tone1.Length + silence.Length + tone2.Length];
+        Buffer.BlockCopy(tone1, 0, result, 0, tone1.Length);
+        Buffer.BlockCopy(silence, 0, result, tone1.Length, silence.Length);
+        Buffer.BlockCopy(tone2, 0, result, tone1.Length + silence.Length, tone2.Length);
+        return result;
+    }
+
     private static byte[] GenerateSingleTone(double frequency, int durationMs, float volume)
     {
         int sampleCount = AudioConfig.SampleRate * durationMs / 1000;

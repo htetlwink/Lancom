@@ -15,6 +15,10 @@ using Lancom.App.Subtitles;
 using Lancom.Windows.Audio;
 using Lancom.Windows.Input;
 using Lancom.Windows.Network;
+using Lancom.Core.Messaging;
+using Lancom.Core.Transfers;
+using Lancom.App.Utils;
+using System.Windows.Media.Imaging;
 
 namespace Lancom.App.ViewModels;
 
@@ -94,6 +98,60 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _isReceivingWhisper;
 
     public event Action<string, string>? OnPageAlertReceived;
+
+    // Instant Messaging & File Transfer Engine
+    public FileTransferManager FileTransferManager { get; } = new();
+    public ObservableCollection<ChatMessage> Messages { get; } = new();
+    public ObservableCollection<ChatMessage> DisplayMessages { get; } = new();
+    private int _selectedDeckTab; // 0 = Roster, 1 = Chat & Files
+    private int _unreadChatCount;
+    private string _chatInputText = string.Empty;
+
+    public int SelectedDeckTab
+    {
+        get => _selectedDeckTab;
+        set
+        {
+            if (SetField(ref _selectedDeckTab, value))
+            {
+                if (_selectedDeckTab == 1)
+                {
+                    UnreadChatCount = 0;
+                }
+                OnPropertyChanged(nameof(IsRosterTabActive));
+                OnPropertyChanged(nameof(IsChatTabActive));
+            }
+        }
+    }
+
+    public bool IsRosterTabActive => SelectedDeckTab == 0;
+    public bool IsChatTabActive => SelectedDeckTab == 1;
+
+    public int UnreadChatCount
+    {
+        get => _unreadChatCount;
+        set
+        {
+            if (SetField(ref _unreadChatCount, value))
+            {
+                OnPropertyChanged(nameof(HasUnreadChat));
+                OnPropertyChanged(nameof(ChatTabHeader));
+            }
+        }
+    }
+
+    public bool HasUnreadChat => _unreadChatCount > 0;
+    public string ChatTabHeader => _unreadChatCount > 0 ? $"💬 CHAT ({_unreadChatCount})" : "💬 CHAT & FILES";
+
+    public string ChatInputText
+    {
+        get => _chatInputText;
+        set => SetField(ref _chatInputText, value);
+    }
+
+    public string CurrentChatTargetDisplay => IsWhisperActive && SelectedWhisperPeer != null
+        ? $"WHISPER TO {SelectedWhisperPeer.DisplayName.ToUpperInvariant()}"
+        : CurrentChannelDisplay;
 
     public bool IsLocalAfk
     {
@@ -183,7 +241,9 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 _transport.CurrentChannel = value;
                 _transport.SendPresenceBeacon();
                 OnPropertyChanged(nameof(CurrentChannelDisplay));
+                OnPropertyChanged(nameof(CurrentChatTargetDisplay));
                 RefreshPeersList();
+                RefreshDisplayMessages();
                 SaveSettings();
             }
         }
@@ -350,6 +410,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 OnPropertyChanged(nameof(IsWhisperActive));
                 OnPropertyChanged(nameof(WhisperTargetName));
                 OnPropertyChanged(nameof(WhisperBannerVisibility));
+                OnPropertyChanged(nameof(CurrentChatTargetDisplay));
+                RefreshDisplayMessages();
             }
         }
     }
@@ -486,6 +548,10 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _peerManager.OnPeerJoined += peer => Application.Current?.Dispatcher?.Invoke(RefreshPeersList);
         _peerManager.OnPeerLeft += peer => Application.Current?.Dispatcher?.Invoke(RefreshPeersList);
         _peerManager.OnPeerUpdated += peer => Application.Current?.Dispatcher?.Invoke(RefreshPeersList);
+
+        FileTransferManager.OnTransferProgress += HandleTransferProgress;
+        FileTransferManager.OnTransferCompleted += HandleTransferCompleted;
+        FileTransferManager.OnTransferFailed += HandleTransferFailed;
 
         LoadSettings();
         if (_selectedPttPreset == null)
@@ -714,14 +780,188 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void HandlePacketReceived(LancomPacket packet, IPEndPoint sender)
     {
-        // Check Whisper Packets
+        // Check Whisper / Targeted Packets: if target is specified and not us, ignore
+        if (packet.TargetUserId != Guid.Empty && packet.TargetUserId != _localId)
+        {
+            return;
+        }
+
+        // ---------------------------------------------------------------
+        // Instant Messaging & File Transfer Packets
+        // ---------------------------------------------------------------
+        if (packet.Type == MessageType.TextMessage)
+        {
+            if (packet.TargetUserId == Guid.Empty && packet.ChannelId != 0xFF && packet.ChannelId != CurrentChannel)
+                return;
+
+            byte[] payloadBytes = packet.Payload;
+            if (packet.IsEncrypted)
+            {
+                if (_channelCrypto.TryDecrypt(packet.SequenceNumber, packet.TimestampMs, packet.Payload, out var dec))
+                {
+                    payloadBytes = dec;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            try
+            {
+                var textPayload = System.Text.Json.JsonSerializer.Deserialize<TextMessagePayload>(payloadBytes);
+                if (textPayload != null)
+                {
+                    Application.Current?.Dispatcher?.Invoke(() =>
+                    {
+                        var msg = new ChatMessage
+                        {
+                            Id = textPayload.MessageId,
+                            SenderId = packet.SenderId,
+                            SenderName = textPayload.SenderName,
+                            ChannelId = packet.ChannelId,
+                            TargetUserId = packet.TargetUserId,
+                            Text = textPayload.Text,
+                            Timestamp = DateTimeOffset.FromUnixTimeMilliseconds((long)textPayload.TimestampMs).UtcDateTime,
+                            IsOutgoing = false,
+                            IsEncrypted = packet.IsEncrypted
+                        };
+
+                        AddChatMessage(msg);
+
+                        if (!IsChatTabActive)
+                        {
+                            UnreadChatCount++;
+                        }
+
+                        _playback.PlayPcm(SfxGenerator.GenerateMessageChime());
+                    });
+
+                    // Send ACK back
+                    var ack = LancomPacket.CreateMessageAck(_localId, packet.SenderId, packet.ChannelId, textPayload.MessageId);
+                    _transport.BroadcastPacket(ack);
+                }
+            }
+            catch { }
+            return;
+        }
+
+        if (packet.Type == MessageType.MessageAck)
+        {
+            if (LancomPacket.TryParseMessageAck(packet, out var ackMessageId))
+            {
+                Application.Current?.Dispatcher?.Invoke(() =>
+                {
+                    var existing = Messages.FirstOrDefault(m => m.Id == ackMessageId);
+                    if (existing != null)
+                    {
+                        existing.IsDelivered = true;
+                    }
+                });
+            }
+            return;
+        }
+
+        if (packet.Type == MessageType.FileOffer)
+        {
+            if (packet.TargetUserId == Guid.Empty && packet.ChannelId != 0xFF && packet.ChannelId != CurrentChannel)
+                return;
+
+            byte[] payloadBytes = packet.Payload;
+            if (packet.IsEncrypted)
+            {
+                if (_channelCrypto.TryDecrypt(packet.SequenceNumber, packet.TimestampMs, packet.Payload, out var dec))
+                {
+                    payloadBytes = dec;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            try
+            {
+                var offer = System.Text.Json.JsonSerializer.Deserialize<FileOfferPayload>(payloadBytes);
+                if (offer != null)
+                {
+                    Application.Current?.Dispatcher?.Invoke(() =>
+                    {
+                        var fileMsg = new ChatMessage
+                        {
+                            Id = Guid.NewGuid(),
+                            SenderId = packet.SenderId,
+                            SenderName = offer.SenderName,
+                            ChannelId = packet.ChannelId,
+                            TargetUserId = packet.TargetUserId,
+                            Text = offer.Category switch
+                            {
+                                FileCategory.Photo => $"📷 Shared a photo: {offer.FileName}",
+                                FileCategory.Video => $"🎥 Shared a video: {offer.FileName}",
+                                _ => $"📁 Shared a file: {offer.FileName}"
+                            },
+                            Timestamp = DateTime.UtcNow,
+                            IsOutgoing = false,
+                            IsEncrypted = packet.IsEncrypted,
+                            TransferId = offer.TransferId,
+                            FileName = offer.FileName,
+                            FileSize = offer.FileSize,
+                            Category = offer.Category,
+                            ThumbnailBase64 = offer.ThumbnailBase64,
+                            TransferProgress = 0.0,
+                            IsTransferCompleted = false
+                        };
+
+                        AddChatMessage(fileMsg);
+                        FileTransferManager.RegisterInboundTransfer(offer, packet.SenderId);
+
+                        if (!IsChatTabActive)
+                        {
+                            UnreadChatCount++;
+                        }
+
+                        _playback.PlayPcm(SfxGenerator.GenerateMessageChime());
+                    });
+                }
+            }
+            catch { }
+            return;
+        }
+
+        if (packet.Type == MessageType.FileChunk)
+        {
+            byte[] rawChunk = packet.Payload;
+            if (packet.IsEncrypted)
+            {
+                if (_channelCrypto.TryDecrypt(packet.SequenceNumber, packet.TimestampMs, packet.Payload, out var dec))
+                {
+                    rawChunk = dec;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            if (FileChunkSerializer.TryDeserialize(rawChunk, out var transferId, out int chunkIndex, out int totalChunks, out byte[] chunkData))
+            {
+                FileTransferManager.ProcessIncomingChunk(transferId, chunkIndex, totalChunks, chunkData, (tId, cIdx, isDone) =>
+                {
+                    var ackPacket = LancomPacket.CreateFileChunkAck(_localId, packet.SenderId, packet.ChannelId, tId, cIdx, isDone);
+                    _transport.BroadcastPacket(ackPacket);
+                });
+            }
+            return;
+        }
+
+        if (packet.Type == MessageType.FileChunkAck)
+        {
+            return;
+        }
+
+        // Check Whisper Voice Packets
         if (packet.IsWhisper || packet.Type == MessageType.WhisperVoice || packet.Type == MessageType.WhisperPttStart || packet.Type == MessageType.WhisperPttEnd)
         {
-            // If target is specified and not us, ignore
-            if (packet.TargetUserId != Guid.Empty && packet.TargetUserId != _localId)
-            {
-                return;
-            }
 
             if (packet.Type == MessageType.WhisperPttStart)
             {
@@ -1139,6 +1379,292 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         catch { }
     }
 
+    #region Messaging & File Transfer Methods
+    public void SendTextMessage(string? text = null)
+    {
+        string messageText = text ?? ChatInputText;
+        if (string.IsNullOrWhiteSpace(messageText)) return;
+
+        Guid targetUserId = IsWhisperActive && SelectedWhisperPeer != null ? SelectedWhisperPeer.Id : Guid.Empty;
+        byte channelId = CurrentChannel;
+        ulong ts = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        uint seq = Interlocked.Increment(ref _sequenceCounter);
+
+        var payload = new TextMessagePayload
+        {
+            MessageId = Guid.NewGuid(),
+            SenderName = DisplayName,
+            Text = messageText.Trim(),
+            TimestampMs = ts
+        };
+
+        bool isEncrypted = _channelCrypto.IsEnabled;
+        byte[] serializedPayload = JsonSerializer.SerializeToUtf8Bytes(payload);
+        if (isEncrypted)
+        {
+            serializedPayload = _channelCrypto.Encrypt(seq, ts, serializedPayload);
+        }
+
+        var packet = new LancomPacket
+        {
+            Type = MessageType.TextMessage,
+            SenderId = _localId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            SequenceNumber = seq,
+            TimestampMs = ts,
+            Flags = (byte)((targetUserId != Guid.Empty ? LancomPacket.FlagWhisper : 0) | (isEncrypted ? LancomPacket.FlagEncrypted : 0)),
+            Payload = serializedPayload
+        };
+
+        _transport.BroadcastPacket(packet);
+
+        var chatMsg = new ChatMessage
+        {
+            Id = payload.MessageId,
+            SenderId = _localId,
+            SenderName = DisplayName,
+            ChannelId = channelId,
+            TargetUserId = targetUserId,
+            Text = payload.Text,
+            Timestamp = DateTime.UtcNow,
+            IsOutgoing = true,
+            IsEncrypted = isEncrypted,
+            IsDelivered = false
+        };
+
+        AddChatMessage(chatMsg);
+        ChatInputText = string.Empty;
+    }
+
+    public void SendFile(string filePath)
+    {
+        if (!File.Exists(filePath)) return;
+
+        Guid targetUserId = IsWhisperActive && SelectedWhisperPeer != null ? SelectedWhisperPeer.Id : Guid.Empty;
+        byte channelId = CurrentChannel;
+        ulong ts = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        string? thumbnailBase64 = null;
+        var category = FileTransferManager.CategorizeFile(Path.GetExtension(filePath));
+        if (category == FileCategory.Photo)
+        {
+            thumbnailBase64 = ImageThumbnailHelper.CreateThumbnailBase64(filePath);
+        }
+
+        var transfer = FileTransferManager.PrepareOutboundTransfer(filePath, channelId, targetUserId, DisplayName, thumbnailBase64);
+        var offerPayload = FileTransferManager.CreateOfferPayload(transfer, DisplayName);
+
+        bool isEncrypted = _channelCrypto.IsEnabled;
+        byte[] serializedOffer = JsonSerializer.SerializeToUtf8Bytes(offerPayload);
+        uint seq = Interlocked.Increment(ref _sequenceCounter);
+        if (isEncrypted)
+        {
+            serializedOffer = _channelCrypto.Encrypt(seq, ts, serializedOffer);
+        }
+
+        var offerPacket = new LancomPacket
+        {
+            Type = MessageType.FileOffer,
+            SenderId = _localId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            SequenceNumber = seq,
+            TimestampMs = ts,
+            Flags = (byte)((targetUserId != Guid.Empty ? LancomPacket.FlagWhisper : 0) | (isEncrypted ? LancomPacket.FlagEncrypted : 0)),
+            Payload = serializedOffer
+        };
+
+        _transport.BroadcastPacket(offerPacket);
+
+        var chatMsg = new ChatMessage
+        {
+            Id = Guid.NewGuid(),
+            SenderId = _localId,
+            SenderName = DisplayName,
+            ChannelId = channelId,
+            TargetUserId = targetUserId,
+            Text = category switch
+            {
+                FileCategory.Photo => $"📷 Shared a photo: {transfer.FileName}",
+                FileCategory.Video => $"🎥 Shared a video: {transfer.FileName}",
+                _ => $"📁 Shared a file: {transfer.FileName}"
+            },
+            Timestamp = DateTime.UtcNow,
+            IsOutgoing = true,
+            IsEncrypted = isEncrypted,
+            TransferId = transfer.TransferId,
+            FileName = transfer.FileName,
+            FileSize = transfer.FileSize,
+            Category = category,
+            ThumbnailBase64 = thumbnailBase64,
+            LocalFilePath = filePath,
+            TransferProgress = 0.0,
+            IsTransferCompleted = false
+        };
+
+        AddChatMessage(chatMsg);
+
+        // Stream chunks over UDP
+        Task.Run(async () =>
+        {
+            await FileTransferManager.StreamChunksAsync(transfer.TransferId, (chunkIndex, totalChunks, chunkData) =>
+            {
+                uint chunkSeq = Interlocked.Increment(ref _sequenceCounter);
+                ulong chunkTs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+                byte[] rawChunk = FileChunkSerializer.Serialize(transfer.TransferId, chunkIndex, totalChunks, chunkData);
+                if (isEncrypted)
+                {
+                    rawChunk = _channelCrypto.Encrypt(chunkSeq, chunkTs, rawChunk);
+                }
+
+                var chunkPacket = new LancomPacket
+                {
+                    Type = MessageType.FileChunk,
+                    SenderId = _localId,
+                    TargetUserId = targetUserId,
+                    ChannelId = channelId,
+                    SequenceNumber = chunkSeq,
+                    TimestampMs = chunkTs,
+                    Flags = (byte)((targetUserId != Guid.Empty ? LancomPacket.FlagWhisper : 0) | (isEncrypted ? LancomPacket.FlagEncrypted : 0)),
+                    Payload = rawChunk
+                };
+
+                _transport.BroadcastPacket(chunkPacket);
+                return Task.CompletedTask;
+            });
+        });
+    }
+
+    public void SendClipboardImage()
+    {
+        try
+        {
+            if (Clipboard.ContainsImage())
+            {
+                var image = Clipboard.GetImage();
+                if (image != null)
+                {
+                    string tempDir = Path.Combine(Path.GetTempPath(), "Lancom");
+                    Directory.CreateDirectory(tempDir);
+                    string fileName = $"Screenshot_{DateTime.Now:yyyyMMdd_HHmmss}.png";
+                    string filePath = Path.Combine(tempDir, fileName);
+
+                    using var fileStream = new FileStream(filePath, FileMode.Create);
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(image));
+                    encoder.Save(fileStream);
+
+                    SendFile(filePath);
+                }
+            }
+        }
+        catch { }
+    }
+
+    public void OpenDownloadedFile(ChatMessage? message)
+    {
+        if (message?.LocalFilePath != null && File.Exists(message.LocalFilePath))
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(message.LocalFilePath)
+                {
+                    UseShellExecute = true
+                });
+            }
+            catch { }
+        }
+    }
+
+    public void OpenDownloadsFolder()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(FileTransferManager.DownloadDirectory)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch { }
+    }
+
+    private void AddChatMessage(ChatMessage msg)
+    {
+        Messages.Add(msg);
+        if (ShouldDisplayMessage(msg))
+        {
+            DisplayMessages.Add(msg);
+        }
+    }
+
+    private bool ShouldDisplayMessage(ChatMessage msg)
+    {
+        if (IsWhisperActive && SelectedWhisperPeer != null)
+        {
+            return (msg.TargetUserId == SelectedWhisperPeer.Id && msg.SenderId == _localId) ||
+                   (msg.TargetUserId == _localId && msg.SenderId == SelectedWhisperPeer.Id);
+        }
+        else
+        {
+            return msg.TargetUserId == Guid.Empty && (msg.ChannelId == CurrentChannel || msg.ChannelId == 0xFF);
+        }
+    }
+
+    public void RefreshDisplayMessages()
+    {
+        DisplayMessages.Clear();
+        foreach (var msg in Messages)
+        {
+            if (ShouldDisplayMessage(msg))
+            {
+                DisplayMessages.Add(msg);
+            }
+        }
+        OnPropertyChanged(nameof(CurrentChatTargetDisplay));
+    }
+
+    private void HandleTransferProgress(Guid transferId, double progress)
+    {
+        Application.Current?.Dispatcher?.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+        {
+            var msg = Messages.FirstOrDefault(m => m.TransferId == transferId);
+            if (msg != null)
+            {
+                msg.TransferProgress = progress;
+            }
+        });
+    }
+
+    private void HandleTransferCompleted(Guid transferId, string finalPath)
+    {
+        Application.Current?.Dispatcher?.Invoke(() =>
+        {
+            var msg = Messages.FirstOrDefault(m => m.TransferId == transferId);
+            if (msg != null)
+            {
+                msg.TransferProgress = 1.0;
+                msg.IsTransferCompleted = true;
+                msg.LocalFilePath = finalPath;
+            }
+        });
+    }
+
+    private void HandleTransferFailed(Guid transferId, string error)
+    {
+        Application.Current?.Dispatcher?.Invoke(() =>
+        {
+            var msg = Messages.FirstOrDefault(m => m.TransferId == transferId);
+            if (msg != null)
+            {
+                msg.IsTransferFailed = true;
+                msg.Text += $" (Transfer failed: {error})";
+            }
+        });
+    }
+    #endregion
+
     #region INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
     protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
@@ -1157,6 +1683,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        FileTransferManager.Dispose();
         _subtitleFadeTimer?.Dispose();
         SpeechToTextService.Dispose();
         _channelCrypto.Dispose();

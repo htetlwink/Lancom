@@ -150,18 +150,30 @@ public class WindowsUdpTransport : IDisposable
             return;
         }
 
-        // 2. Direct Unicast to known peers on this channel
+        // 2. Targeted 1-on-1 Whisper Packet (Unicast directly to peer)
+        if (packet.TargetUserId != Guid.Empty)
+        {
+            if (_peerManager.TryGetPeer(packet.TargetUserId, out var targetPeer) && targetPeer?.EndPoint != null)
+            {
+                SendRaw(raw, targetPeer.EndPoint);
+            }
+            return;
+        }
+
+        // 3. Direct Unicast to known peers on this channel
         var targetPeers = _peerManager.GetPeersForChannel(_currentChannel);
         foreach (var peer in targetPeers)
         {
             SendRaw(raw, peer.EndPoint);
         }
 
-        // 3. For beacons, floor requests, or page alerts, also broadcast on all physical subnets
+        // 4. For beacons, floor requests, page alerts, or channel text messages, also broadcast on all physical subnets
         if (packet.Type == MessageType.PresenceBeacon || 
             packet.Type == MessageType.PttStart || 
             packet.Type == MessageType.PttEnd || 
-            packet.Type == MessageType.PageAlert)
+            packet.Type == MessageType.PageAlert ||
+            packet.Type == MessageType.TextMessage ||
+            packet.Type == MessageType.FileOffer)
         {
             foreach (var adapter in _adapters)
             {

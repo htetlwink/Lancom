@@ -1,8 +1,10 @@
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using Lancom.Core.Messaging;
 using Lancom.Core.Network;
 using Lancom.Windows.UI;
 
@@ -42,6 +44,11 @@ public partial class MainWindow : Window
                 {
                     _trayManager?.ShowBalloon($"📢 {senderName} paged you!", msg);
                 });
+            };
+
+            ViewModel.DisplayMessages.CollectionChanged += (s, ev) =>
+            {
+                ScrollChatToEnd();
             };
         }
     }
@@ -217,6 +224,116 @@ public partial class MainWindow : Window
         ViewModel.ClearWhisper();
     }
 
+    private void RosterTab_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SelectedDeckTab = 0;
+    }
+
+    private void ChatTab_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SelectedDeckTab = 1;
+        ScrollChatToEnd();
+    }
+
+    private void SendMessage_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.SendTextMessage();
+        ChatInputTextBox.Focus();
+        ScrollChatToEnd();
+    }
+
+    private void ChatInputTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
+        {
+            e.Handled = true;
+            ViewModel.SendTextMessage();
+            ScrollChatToEnd();
+        }
+    }
+
+    private void AttachFile_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Select File, Photo, or Video to Send",
+            Filter = "All Files (*.*)|*.*|Images (*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp)|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp|Videos (*.mp4;*.mkv;*.avi;*.mov;*.webm)|*.mp4;*.mkv;*.avi;*.mov;*.webm",
+            Multiselect = true
+        };
+
+        if (dlg.ShowDialog(this) == true)
+        {
+            ViewModel.SelectedDeckTab = 1;
+            foreach (var file in dlg.FileNames)
+            {
+                ViewModel.SendFile(file);
+            }
+            ScrollChatToEnd();
+        }
+    }
+
+    private void OpenFile_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement elem && elem.DataContext is ChatMessage msg)
+        {
+            ViewModel.OpenDownloadedFile(msg);
+        }
+    }
+
+    private void Image_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement elem && elem.DataContext is ChatMessage msg)
+        {
+            ViewModel.OpenDownloadedFile(msg);
+        }
+    }
+
+    private void OpenDownloadsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.OpenDownloadsFolder();
+    }
+
+    private void Window_DragOver(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            e.Effects = DragDropEffects.Copy;
+            e.Handled = true;
+        }
+        else
+        {
+            e.Effects = DragDropEffects.None;
+        }
+    }
+
+    private void Window_Drop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files != null && files.Length > 0)
+            {
+                ViewModel.SelectedDeckTab = 1;
+                foreach (var file in files)
+                {
+                    if (File.Exists(file))
+                    {
+                        ViewModel.SendFile(file);
+                    }
+                }
+                ScrollChatToEnd();
+            }
+        }
+    }
+
+    private void ScrollChatToEnd()
+    {
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+        {
+            ChatScrollViewer?.ScrollToEnd();
+        });
+    }
+
     private void SettingsDrawer_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         e.Handled = false;
@@ -251,6 +368,24 @@ public partial class MainWindow : Window
         {
             ViewModel.IsSettingsOpen = false;
             e.Handled = true;
+            return;
+        }
+
+        // Ctrl+V paste clipboard screenshot / image
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.V)
+        {
+            try
+            {
+                if (Clipboard.ContainsImage() && ViewModel != null)
+                {
+                    ViewModel.SelectedDeckTab = 1;
+                    ViewModel.SendClipboardImage();
+                    ScrollChatToEnd();
+                    e.Handled = true;
+                    return;
+                }
+            }
+            catch { }
         }
     }
 
@@ -258,7 +393,7 @@ public partial class MainWindow : Window
     {
         _trayManager?.Dispose();
         _trayManager = null;
-        ViewModel.Dispose();
+        ViewModel?.Dispose();
         base.OnClosed(e);
     }
 }
