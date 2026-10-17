@@ -58,6 +58,8 @@ public class WindowsUdpTransport : IDisposable
         {
             _udpClient = new UdpClient();
             _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _udpClient.Client.ReceiveBufferSize = 4 * 1024 * 1024;
+            _udpClient.Client.SendBufferSize = 4 * 1024 * 1024;
             _udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, _port));
             _udpClient.EnableBroadcast = true;
 
@@ -180,7 +182,10 @@ public class WindowsUdpTransport : IDisposable
     {
         packet.SenderId = _localId;
         packet.ChannelId = _currentChannel;
-        packet.TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (packet.TimestampMs == 0)
+        {
+            packet.TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
 
         byte[] raw = packet.Serialize();
 
@@ -197,8 +202,8 @@ public class WindowsUdpTransport : IDisposable
             if (_peerManager.TryGetPeer(packet.TargetUserId, out var targetPeer) && targetPeer?.EndPoint != null)
             {
                 SendRaw(raw, targetPeer.EndPoint);
+                return;
             }
-            return;
         }
 
         // 3. Channel broadcast (packet.TargetUserId == Guid.Empty):

@@ -25,6 +25,7 @@ public class FileOfferPayload
     public FileCategory Category { get; set; } = FileCategory.GeneralFile;
     public int TotalChunks { get; set; }
     public int ChunkSize { get; set; } = 1200;
+    public byte ChannelId { get; set; } = 1;
     public string? ThumbnailBase64 { get; set; }
 }
 
@@ -39,6 +40,12 @@ public class FileChunkAckPayload
     public Guid TransferId { get; set; }
     public int ChunkIndex { get; set; }
     public bool IsComplete { get; set; }
+}
+
+public class FileMissingChunksRequestPayload
+{
+    public Guid TransferId { get; set; }
+    public List<int> MissingIndices { get; set; } = new();
 }
 
 public static class FileChunkSerializer

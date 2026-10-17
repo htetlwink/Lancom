@@ -22,7 +22,8 @@ public enum MessageType : byte
     FileOffer = 22,
     FileOfferAnswer = 23,
     FileChunk = 24,
-    FileChunkAck = 25
+    FileChunkAck = 25,
+    FileMissingChunksRequest = 26
 }
 
 public class LancomPacket
@@ -58,7 +59,8 @@ public class LancomPacket
             (Type == MessageType.WhisperVoice || Type == MessageType.WhisperPttStart || Type == MessageType.WhisperPttEnd ||
              Type == MessageType.TextMessage || Type == MessageType.MessageAck ||
              Type == MessageType.FileOffer || Type == MessageType.FileOfferAnswer ||
-             Type == MessageType.FileChunk || Type == MessageType.FileChunkAck))
+             Type == MessageType.FileChunk || Type == MessageType.FileChunkAck ||
+             Type == MessageType.FileMissingChunksRequest))
         {
             Flags |= FlagWhisper;
             byte[] whisperPayload = new byte[16 + payload.Length];
@@ -539,11 +541,12 @@ public class LancomPacket
         };
     }
 
-    public static LancomPacket CreateFileChunkAck(Guid senderId, Guid targetUserId, byte channelId, Guid transferId, int chunkIndex, bool isComplete)
+    public static LancomPacket CreateFileChunkAck(Guid senderId, Guid targetUserId, byte channelId, Guid transferId, int chunkIndex, bool isComplete, bool isEncrypted = false)
     {
         byte[] jsonBytes = JsonSerializer.SerializeToUtf8Bytes(new FileChunkAckPayload { TransferId = transferId, ChunkIndex = chunkIndex, IsComplete = isComplete });
         byte flags = 0;
         if (targetUserId != Guid.Empty) flags |= FlagWhisper;
+        if (isEncrypted) flags |= FlagEncrypted;
 
         return new LancomPacket
         {
@@ -573,6 +576,51 @@ public class LancomPacket
                 transferId = ack.TransferId;
                 chunkIndex = ack.ChunkIndex;
                 isComplete = ack.IsComplete;
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    public static LancomPacket CreateFileMissingChunksRequest(Guid senderId, Guid targetUserId, byte channelId, Guid transferId, IList<int> missingIndices, bool isEncrypted = false)
+    {
+        var payloadObj = new FileMissingChunksRequestPayload
+        {
+            TransferId = transferId,
+            MissingIndices = new List<int>(missingIndices)
+        };
+        byte[] jsonBytes = JsonSerializer.SerializeToUtf8Bytes(payloadObj);
+        byte flags = 0;
+        if (targetUserId != Guid.Empty) flags |= FlagWhisper;
+        if (isEncrypted) flags |= FlagEncrypted;
+
+        return new LancomPacket
+        {
+            Type = MessageType.FileMissingChunksRequest,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            Flags = flags,
+            TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Payload = jsonBytes
+        };
+    }
+
+    public static bool TryParseFileMissingChunksRequest(LancomPacket packet, out Guid transferId, out List<int>? missingIndices)
+    {
+        transferId = Guid.Empty;
+        missingIndices = null;
+        if (packet == null || packet.Type != MessageType.FileMissingChunksRequest || packet.Payload == null || packet.Payload.Length == 0)
+            return false;
+
+        try
+        {
+            var req = JsonSerializer.Deserialize<FileMissingChunksRequestPayload>(packet.Payload);
+            if (req != null)
+            {
+                transferId = req.TransferId;
+                missingIndices = req.MissingIndices;
                 return true;
             }
         }

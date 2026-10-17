@@ -244,11 +244,24 @@ public partial class MainWindow : Window
 
     private void ChatInputTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
+        if (e.Key == Key.Enter)
         {
-            e.Handled = true;
-            ViewModel.SendTextMessage();
-            ScrollChatToEnd();
+            if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
+            {
+                // Shift+Enter: Insert a newline at the cursor/replace selection
+                e.Handled = true;
+                int caret = ChatInputTextBox.SelectionStart;
+                ChatInputTextBox.SelectedText = Environment.NewLine;
+                ChatInputTextBox.SelectionStart = caret + Environment.NewLine.Length;
+                ChatInputTextBox.SelectionLength = 0;
+            }
+            else
+            {
+                // Enter: Send message
+                e.Handled = true;
+                ViewModel.SendTextMessage();
+                ScrollChatToEnd();
+            }
         }
     }
 

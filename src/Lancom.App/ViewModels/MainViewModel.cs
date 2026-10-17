@@ -555,6 +555,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         FileTransferManager.OnTransferProgress += HandleTransferProgress;
         FileTransferManager.OnTransferCompleted += HandleTransferCompleted;
         FileTransferManager.OnTransferFailed += HandleTransferFailed;
+        FileTransferManager.OnMissingChunksRequested += HandleMissingChunksRequested;
 
         LoadSettings();
         if (_selectedPttPreset == null)
@@ -930,6 +931,9 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 var offer = System.Text.Json.JsonSerializer.Deserialize<FileOfferPayload>(payloadBytes);
                 if (offer != null)
                 {
+                    // Register inbound transfer IMMEDIATELY on background network thread to prevent chunk drop race condition
+                    FileTransferManager.RegisterInboundTransfer(offer, packet.SenderId, packet.ChannelId);
+
                     if (_processedMessageIds.ContainsKey(offer.TransferId))
                     {
                         return;
@@ -970,7 +974,6 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                         };
 
                         AddChatMessage(fileMsg);
-                        FileTransferManager.RegisterInboundTransfer(offer, packet.SenderId);
 
                         if (!IsChatTabActive)
                         {
@@ -1004,8 +1007,33 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 FileTransferManager.ProcessIncomingChunk(transferId, chunkIndex, totalChunks, chunkData, (tId, cIdx, isDone) =>
                 {
-                    var ackPacket = LancomPacket.CreateFileChunkAck(_localId, packet.SenderId, packet.ChannelId, tId, cIdx, isDone);
+                    uint ackSeq = Interlocked.Increment(ref _sequenceCounter);
+                    ulong ackTs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    byte[] ackPayload = JsonSerializer.SerializeToUtf8Bytes(new FileChunkAckPayload { TransferId = tId, ChunkIndex = cIdx, IsComplete = isDone });
+                    bool isEncrypted = _channelCrypto.IsEnabled;
+                    if (isEncrypted)
+                    {
+                        ackPayload = _channelCrypto.Encrypt(ackSeq, ackTs, ackPayload);
+                    }
+
+                    var ackPacket = new LancomPacket
+                    {
+                        Type = MessageType.FileChunkAck,
+                        SenderId = _localId,
+                        TargetUserId = packet.SenderId,
+                        ChannelId = packet.ChannelId,
+                        SequenceNumber = ackSeq,
+                        TimestampMs = ackTs,
+                        Flags = (byte)((packet.SenderId != Guid.Empty ? LancomPacket.FlagWhisper : 0) | (isEncrypted ? LancomPacket.FlagEncrypted : 0)),
+                        Payload = ackPayload
+                    };
+
                     _transport.BroadcastPacket(ackPacket);
+                    if (isDone)
+                    {
+                        // Send redundant copy of completion ACK for network loss resilience
+                        _transport.BroadcastPacket(ackPacket);
+                    }
                 });
             }
             return;
@@ -1013,6 +1041,62 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
         if (packet.Type == MessageType.FileChunkAck)
         {
+            byte[] payloadBytes = packet.Payload;
+            if (packet.IsEncrypted)
+            {
+                if (_channelCrypto.TryDecrypt(packet.SequenceNumber, packet.TimestampMs, packet.Payload, out var dec))
+                {
+                    payloadBytes = dec;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            try
+            {
+                var ack = JsonSerializer.Deserialize<FileChunkAckPayload>(payloadBytes);
+                if (ack != null)
+                {
+                    FileTransferManager.HandleChunkAck(ack.TransferId, ack.ChunkIndex, ack.IsComplete);
+                }
+            }
+            catch { }
+            return;
+        }
+
+        if (packet.Type == MessageType.FileMissingChunksRequest)
+        {
+            byte[] payloadBytes = packet.Payload;
+            if (packet.IsEncrypted)
+            {
+                if (_channelCrypto.TryDecrypt(packet.SequenceNumber, packet.TimestampMs, packet.Payload, out var dec))
+                {
+                    payloadBytes = dec;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            try
+            {
+                var req = JsonSerializer.Deserialize<FileMissingChunksRequestPayload>(payloadBytes);
+                if (req != null && req.MissingIndices?.Count > 0)
+                {
+                    Task.Run(async () =>
+                    {
+                        await FileTransferManager.ResendChunksAsync(req.TransferId, req.MissingIndices, (chunkIndex, totalChunks, chunkData) =>
+                        {
+                            SendChunkPacket(req.TransferId, packet.SenderId, packet.ChannelId, chunkIndex, totalChunks, chunkData);
+                            return Task.CompletedTask;
+                        });
+                    });
+                }
+            }
+            catch { }
             return;
         }
 
@@ -1565,33 +1649,73 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         // Stream chunks over UDP
         Task.Run(async () =>
         {
+            await Task.Delay(50);
             await FileTransferManager.StreamChunksAsync(transfer.TransferId, (chunkIndex, totalChunks, chunkData) =>
             {
-                uint chunkSeq = Interlocked.Increment(ref _sequenceCounter);
-                ulong chunkTs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-                byte[] rawChunk = FileChunkSerializer.Serialize(transfer.TransferId, chunkIndex, totalChunks, chunkData);
-                if (isEncrypted)
-                {
-                    rawChunk = _channelCrypto.Encrypt(chunkSeq, chunkTs, rawChunk);
-                }
-
-                var chunkPacket = new LancomPacket
-                {
-                    Type = MessageType.FileChunk,
-                    SenderId = _localId,
-                    TargetUserId = targetUserId,
-                    ChannelId = channelId,
-                    SequenceNumber = chunkSeq,
-                    TimestampMs = chunkTs,
-                    Flags = (byte)((targetUserId != Guid.Empty ? LancomPacket.FlagWhisper : 0) | (isEncrypted ? LancomPacket.FlagEncrypted : 0)),
-                    Payload = rawChunk
-                };
-
-                _transport.BroadcastPacket(chunkPacket);
+                SendChunkPacket(transfer.TransferId, targetUserId, channelId, chunkIndex, totalChunks, chunkData);
                 return Task.CompletedTask;
             });
         });
+    }
+
+    private void SendChunkPacket(Guid transferId, Guid targetUserId, byte channelId, int chunkIndex, int totalChunks, byte[] chunkData)
+    {
+        uint chunkSeq = Interlocked.Increment(ref _sequenceCounter);
+        ulong chunkTs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        byte[] rawChunk = FileChunkSerializer.Serialize(transferId, chunkIndex, totalChunks, chunkData);
+        bool isEncrypted = _channelCrypto.IsEnabled;
+        if (isEncrypted)
+        {
+            rawChunk = _channelCrypto.Encrypt(chunkSeq, chunkTs, rawChunk);
+        }
+
+        var chunkPacket = new LancomPacket
+        {
+            Type = MessageType.FileChunk,
+            SenderId = _localId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            SequenceNumber = chunkSeq,
+            TimestampMs = chunkTs,
+            Flags = (byte)((targetUserId != Guid.Empty ? LancomPacket.FlagWhisper : 0) | (isEncrypted ? LancomPacket.FlagEncrypted : 0)),
+            Payload = rawChunk
+        };
+
+        _transport.BroadcastPacket(chunkPacket);
+    }
+
+    private void HandleMissingChunksRequested(Guid transferId, Guid targetUserId, byte channelId, List<int> missingIndices)
+    {
+        uint seq = Interlocked.Increment(ref _sequenceCounter);
+        ulong ts = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var payload = new FileMissingChunksRequestPayload
+        {
+            TransferId = transferId,
+            MissingIndices = missingIndices
+        };
+
+        byte[] serialized = JsonSerializer.SerializeToUtf8Bytes(payload);
+        bool isEncrypted = _channelCrypto.IsEnabled;
+        if (isEncrypted)
+        {
+            serialized = _channelCrypto.Encrypt(seq, ts, serialized);
+        }
+
+        var packet = new LancomPacket
+        {
+            Type = MessageType.FileMissingChunksRequest,
+            SenderId = _localId,
+            TargetUserId = targetUserId,
+            ChannelId = channelId,
+            SequenceNumber = seq,
+            TimestampMs = ts,
+            Flags = (byte)((targetUserId != Guid.Empty ? LancomPacket.FlagWhisper : 0) | (isEncrypted ? LancomPacket.FlagEncrypted : 0)),
+            Payload = serialized
+        };
+
+        _transport.BroadcastPacket(packet);
     }
 
     public void SendClipboardImage()

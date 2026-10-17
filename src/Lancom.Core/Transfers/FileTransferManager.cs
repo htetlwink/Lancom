@@ -22,12 +22,14 @@ public class OutboundTransfer
     public bool IsCompleted { get; set; }
     public bool IsCancelled { get; set; }
     public string? ThumbnailBase64 { get; set; }
+    public TaskCompletionSource<bool> CompletionTcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
 public class InboundTransfer
 {
     public Guid TransferId { get; set; }
     public Guid SenderId { get; set; }
+    public byte ChannelId { get; set; } = 1;
     public string SenderName { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public long FileSize { get; set; }
@@ -42,6 +44,9 @@ public class InboundTransfer
     public bool IsCompleted { get; set; }
     public bool IsCancelled { get; set; }
     public DateTime StartTime { get; set; } = DateTime.UtcNow;
+    public DateTime LastActivityTime { get; set; } = DateTime.UtcNow;
+    public DateTime LastMissingRequestTime { get; set; } = DateTime.MinValue;
+    public int MissingRequestCount { get; set; }
     public FileStream? Stream { get; set; }
     public object Lock { get; } = new();
 }
@@ -52,10 +57,12 @@ public class FileTransferManager : IDisposable
     private readonly string _downloadDir;
     private readonly ConcurrentDictionary<Guid, OutboundTransfer> _outbound = new();
     private readonly ConcurrentDictionary<Guid, InboundTransfer> _inbound = new();
+    private readonly Timer _auditTimer;
 
     public event Action<Guid, double>? OnTransferProgress;
     public event Action<Guid, string>? OnTransferCompleted; // TransferId, FinalFilePath
     public event Action<Guid, string>? OnTransferFailed; // TransferId, ErrorMessage
+    public event Action<Guid, Guid, byte, List<int>>? OnMissingChunksRequested; // TransferId, SenderId, ChannelId, MissingIndices
 
     public string DownloadDirectory => _downloadDir;
 
@@ -72,6 +79,7 @@ public class FileTransferManager : IDisposable
         }
 
         Directory.CreateDirectory(_downloadDir);
+        _auditTimer = new Timer(AuditInboundTransfers, null, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
     }
 
     public static FileCategory CategorizeFile(string extension)
@@ -133,6 +141,7 @@ public class FileTransferManager : IDisposable
             FileName = transfer.FileName,
             FileSize = transfer.FileSize,
             Sha256 = transfer.Sha256,
+            ChannelId = transfer.ChannelId,
             Category = transfer.Category,
             TotalChunks = transfer.TotalChunks,
             ChunkSize = transfer.ChunkSize,
@@ -159,21 +168,66 @@ public class FileTransferManager : IDisposable
 
             await sendChunkCallback(i, transfer.TotalChunks, chunkData);
 
-            double progress = (double)(i + 1) / transfer.TotalChunks;
+            double progress = Math.Min(0.95, (double)(i + 1) / transfer.TotalChunks);
             OnTransferProgress?.Invoke(transferId, progress);
 
-            // Adaptive LAN pacing: 0.5ms delay every chunk keeps CPU and socket queue light
-            if (i % 8 == 0)
+            // Adaptive LAN pacing: 1ms delay every 2 chunks avoids overwhelming Wi-Fi links and UDP buffers
+            if (i % 2 == 0)
             {
                 await Task.Delay(1, ct);
             }
         }
 
-        transfer.IsCompleted = true;
-        OnTransferCompleted?.Invoke(transferId, transfer.FilePath);
+        if (ct.IsCancellationRequested || transfer.IsCancelled) return;
+
+        // Active reliability handshake: Wait for Receiver's FileChunkAck(isComplete: true)
+        int maxRetries = 15; // 15 * 800ms ≈ 12 seconds max timeout
+        int retry = 0;
+
+        while (!transfer.IsCompleted && !transfer.IsCancelled && !ct.IsCancellationRequested && retry < maxRetries)
+        {
+            var completedTask = await Task.WhenAny(transfer.CompletionTcs.Task, Task.Delay(800, ct));
+            if (completedTask == transfer.CompletionTcs.Task && transfer.IsCompleted)
+            {
+                break;
+            }
+
+            if (transfer.IsCompleted || transfer.IsCancelled || ct.IsCancellationRequested)
+            {
+                break;
+            }
+
+            retry++;
+
+            // Retransmit the last chunk to stimulate receiver response if stalled
+            if (transfer.TotalChunks > 0)
+            {
+                int lastChunkIndex = transfer.TotalChunks - 1;
+                long lastOffset = (long)lastChunkIndex * transfer.ChunkSize;
+                fileStream.Seek(lastOffset, SeekOrigin.Begin);
+                int lastBytes = await fileStream.ReadAsync(buffer, ct);
+                if (lastBytes > 0)
+                {
+                    byte[] lastData = new byte[lastBytes];
+                    Buffer.BlockCopy(buffer, 0, lastData, 0, lastBytes);
+                    await sendChunkCallback(lastChunkIndex, transfer.TotalChunks, lastData);
+                }
+            }
+        }
+
+        if (transfer.IsCompleted)
+        {
+            OnTransferProgress?.Invoke(transferId, 1.0);
+            OnTransferCompleted?.Invoke(transferId, transfer.FilePath);
+        }
+        else if (!transfer.IsCancelled)
+        {
+            transfer.IsCancelled = true;
+            OnTransferFailed?.Invoke(transferId, "Transfer timed out waiting for receiver confirmation.");
+        }
     }
 
-    public InboundTransfer RegisterInboundTransfer(FileOfferPayload offer, Guid senderId)
+    public InboundTransfer RegisterInboundTransfer(FileOfferPayload offer, Guid senderId, byte channelId = 1)
     {
         if (_inbound.TryGetValue(offer.TransferId, out var existing))
         {
@@ -191,6 +245,7 @@ public class FileTransferManager : IDisposable
         {
             TransferId = offer.TransferId,
             SenderId = senderId,
+            ChannelId = channelId != 0 ? channelId : offer.ChannelId,
             SenderName = offer.SenderName,
             FileName = safeFileName,
             FileSize = offer.FileSize,
@@ -230,11 +285,20 @@ public class FileTransferManager : IDisposable
     public void ProcessIncomingChunk(Guid transferId, int chunkIndex, int totalChunks, byte[] chunkData, Action<Guid, int, bool> sendAckCallback)
     {
         if (!_inbound.TryGetValue(transferId, out var transfer)) return;
-        if (transfer.IsCompleted || transfer.IsCancelled) return;
+        if (transfer.IsCancelled) return;
 
         lock (transfer.Lock)
         {
+            if (transfer.IsCompleted)
+            {
+                // Already completed! Re-send completion ACK in case sender missed it.
+                sendAckCallback(transferId, chunkIndex, true);
+                return;
+            }
+
             if (chunkIndex < 0 || chunkIndex >= transfer.TotalChunks) return;
+            transfer.LastActivityTime = DateTime.UtcNow;
+
             if (transfer.ReceivedChunks[chunkIndex]) return; // already got this chunk
 
             try
@@ -276,9 +340,19 @@ public class FileTransferManager : IDisposable
                         OnTransferFailed?.Invoke(transferId, "SHA-256 integrity hash verification failed.");
                     }
                 }
-                else if (chunkIndex % 8 == 0 || chunkIndex == transfer.TotalChunks - 1)
+                else
                 {
-                    sendAckCallback(transferId, chunkIndex, false);
+                    if (chunkIndex == transfer.TotalChunks - 1 && transfer.ReceivedChunkCount < transfer.TotalChunks)
+                    {
+                        if ((DateTime.UtcNow - transfer.LastMissingRequestTime).TotalMilliseconds >= 300)
+                        {
+                            TriggerMissingChunksRequest(transfer);
+                        }
+                    }
+                    else if (chunkIndex % 16 == 0)
+                    {
+                        sendAckCallback(transferId, chunkIndex, false);
+                    }
                 }
             }
             catch (Exception ex)
@@ -286,6 +360,112 @@ public class FileTransferManager : IDisposable
                 transfer.IsCancelled = true;
                 OnTransferFailed?.Invoke(transferId, ex.Message);
             }
+        }
+    }
+
+    public void HandleChunkAck(Guid transferId, int chunkIndex, bool isComplete)
+    {
+        if (_outbound.TryGetValue(transferId, out var transfer))
+        {
+            transfer.LastAcknowledgedChunk = chunkIndex;
+            if (isComplete)
+            {
+                transfer.IsCompleted = true;
+                transfer.CompletionTcs.TrySetResult(true);
+            }
+        }
+    }
+
+    public async Task ResendChunksAsync(Guid transferId, IEnumerable<int> chunkIndices, Func<int, int, byte[], Task> sendChunkCallback, CancellationToken ct = default)
+    {
+        if (!_outbound.TryGetValue(transferId, out var transfer)) return;
+        if (transfer.IsCancelled) return;
+
+        try
+        {
+            using var fileStream = new FileStream(transfer.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            byte[] buffer = new byte[transfer.ChunkSize];
+
+            int count = 0;
+            foreach (int index in chunkIndices)
+            {
+                if (ct.IsCancellationRequested || transfer.IsCancelled) break;
+                if (index < 0 || index >= transfer.TotalChunks) continue;
+
+                long offset = (long)index * transfer.ChunkSize;
+                if (offset >= transfer.FileSize) continue;
+
+                fileStream.Seek(offset, SeekOrigin.Begin);
+                int toRead = (int)Math.Min(transfer.ChunkSize, transfer.FileSize - offset);
+                int bytesRead = await fileStream.ReadAsync(buffer.AsMemory(0, toRead), ct);
+                if (bytesRead <= 0) continue;
+
+                byte[] chunkData = new byte[bytesRead];
+                Buffer.BlockCopy(buffer, 0, chunkData, 0, bytesRead);
+
+                await sendChunkCallback(index, transfer.TotalChunks, chunkData);
+
+                count++;
+                if (count % 2 == 0)
+                {
+                    await Task.Delay(1, ct);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ResendChunks Error] {ex.Message}");
+        }
+    }
+
+    private void AuditInboundTransfers(object? state)
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            foreach (var inbound in _inbound.Values)
+            {
+                if (inbound.IsCompleted || inbound.IsCancelled) continue;
+
+                lock (inbound.Lock)
+                {
+                    if (inbound.IsCompleted || inbound.IsCancelled) continue;
+
+                    if (inbound.ReceivedChunkCount < inbound.TotalChunks)
+                    {
+                        var referenceTime = inbound.ReceivedChunkCount > 0 ? inbound.LastActivityTime : inbound.StartTime;
+                        if ((now - referenceTime).TotalMilliseconds >= 700)
+                        {
+                            if (inbound.MissingRequestCount < 30)
+                            {
+                                inbound.MissingRequestCount++;
+                                inbound.LastActivityTime = now;
+                                TriggerMissingChunksRequest(inbound);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+
+    private void TriggerMissingChunksRequest(InboundTransfer inbound)
+    {
+        var missing = new List<int>();
+        for (int i = 0; i < inbound.TotalChunks; i++)
+        {
+            if (!inbound.ReceivedChunks[i])
+            {
+                missing.Add(i);
+                if (missing.Count >= 100) break;
+            }
+        }
+
+        if (missing.Count > 0)
+        {
+            inbound.LastMissingRequestTime = DateTime.UtcNow;
+            OnMissingChunksRequested?.Invoke(inbound.TransferId, inbound.SenderId, inbound.ChannelId, missing);
         }
     }
 
@@ -311,6 +491,7 @@ public class FileTransferManager : IDisposable
         if (_outbound.TryGetValue(transferId, out var outT))
         {
             outT.IsCancelled = true;
+            outT.CompletionTcs.TrySetCanceled();
         }
 
         if (_inbound.TryGetValue(transferId, out var inT))
@@ -327,6 +508,7 @@ public class FileTransferManager : IDisposable
 
     public void Dispose()
     {
+        _auditTimer.Dispose();
         foreach (var inT in _inbound.Values)
         {
             lock (inT.Lock)
