@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using Lancom.Core.Network;
@@ -17,6 +18,8 @@ public class WindowsUdpTransport : IDisposable
     private IPEndPoint? _relayEndPoint;
     private uint _sequenceCounter;
     private readonly List<NetworkAdapterInfo> _adapters;
+    private readonly ConcurrentDictionary<(Guid SenderId, uint SequenceNumber), long> _recentPackets = new();
+    private long _lastPruneTimestamp;
 
     public event Action<LancomPacket, IPEndPoint>? OnPacketReceived;
 
@@ -87,6 +90,27 @@ public class WindowsUdpTransport : IDisposable
                 // Ignore packets originating from this machine
                 if (packet.SenderId == _localId) continue;
 
+                // Transport-level packet deduplication for non-zero sequence numbers
+                if (packet.SequenceNumber != 0)
+                {
+                    long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var packetKey = (packet.SenderId, packet.SequenceNumber);
+
+                    if (_recentPackets.TryGetValue(packetKey, out long lastSeen) && (now - lastSeen) < 5000)
+                    {
+                        continue;
+                    }
+
+                    _recentPackets[packetKey] = now;
+
+                    // Periodically (or when cache size exceeds 500 items), prune entries older than 5000ms
+                    if (_recentPackets.Count > 500 || (now - _lastPruneTimestamp) > 5000)
+                    {
+                        _lastPruneTimestamp = now;
+                        PruneRecentPackets(now);
+                    }
+                }
+
                 // Update peer table if presence beacon
                 if (packet.Type == MessageType.PresenceBeacon)
                 {
@@ -113,6 +137,23 @@ public class WindowsUdpTransport : IDisposable
             {
                 Console.WriteLine($"[Transport Receive Error] {ex.Message}");
             }
+        }
+    }
+
+    private void PruneRecentPackets(long now)
+    {
+        try
+        {
+            foreach (var entry in _recentPackets)
+            {
+                if (now - entry.Value > 5000)
+                {
+                    _recentPackets.TryRemove(entry.Key, out _);
+                }
+            }
+        }
+        catch
+        {
         }
     }
 
@@ -160,26 +201,18 @@ public class WindowsUdpTransport : IDisposable
             return;
         }
 
-        // 3. Direct Unicast to known peers on this channel
-        var targetPeers = _peerManager.GetPeersForChannel(_currentChannel);
-        foreach (var peer in targetPeers)
-        {
-            SendRaw(raw, peer.EndPoint);
-        }
-
-        // 4. For beacons, floor requests, page alerts, or channel text messages, also broadcast on all physical subnets
-        if (packet.Type == MessageType.PresenceBeacon || 
-            packet.Type == MessageType.PttStart || 
-            packet.Type == MessageType.PttEnd || 
-            packet.Type == MessageType.PageAlert ||
-            packet.Type == MessageType.TextMessage ||
-            packet.Type == MessageType.FileOffer)
+        // 3. Channel broadcast (packet.TargetUserId == Guid.Empty):
+        // Send directed subnet broadcast to each physical adapter.
+        // Fallback to global broadcast only if no physical adapters are found.
+        if (_adapters.Count > 0)
         {
             foreach (var adapter in _adapters)
             {
                 SendRaw(raw, new IPEndPoint(adapter.BroadcastAddress, _port));
             }
-            // Global fallback broadcast
+        }
+        else
+        {
             SendRaw(raw, new IPEndPoint(IPAddress.Broadcast, _port));
         }
     }
@@ -222,6 +255,7 @@ public class WindowsUdpTransport : IDisposable
         _udpClient?.Close();
         _udpClient?.Dispose();
         _udpClient = null;
+        _recentPackets.Clear();
     }
 
     public void Dispose()

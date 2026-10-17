@@ -175,6 +175,11 @@ public class FileTransferManager : IDisposable
 
     public InboundTransfer RegisterInboundTransfer(FileOfferPayload offer, Guid senderId)
     {
+        if (_inbound.TryGetValue(offer.TransferId, out var existing))
+        {
+            return existing;
+        }
+
         string safeFileName = Path.GetFileName(offer.FileName);
         string tempFileName = $"{offer.TransferId}_{safeFileName}.tmp";
         string tempFilePath = Path.Combine(_downloadDir, tempFileName);
@@ -211,8 +216,15 @@ public class FileTransferManager : IDisposable
             OnTransferFailed?.Invoke(offer.TransferId, ex.Message);
         }
 
-        _inbound[offer.TransferId] = inbound;
-        return inbound;
+        if (_inbound.TryAdd(offer.TransferId, inbound))
+        {
+            return inbound;
+        }
+
+        // Handle race condition: dispose redundant stream and return existing
+        inbound.Stream?.Dispose();
+        inbound.Stream = null;
+        return _inbound[offer.TransferId];
     }
 
     public void ProcessIncomingChunk(Guid transferId, int chunkIndex, int totalChunks, byte[] chunkData, Action<Guid, int, bool> sendAckCallback)

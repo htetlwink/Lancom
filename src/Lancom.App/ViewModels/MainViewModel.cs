@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -103,6 +105,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public FileTransferManager FileTransferManager { get; } = new();
     public ObservableCollection<ChatMessage> Messages { get; } = new();
     public ObservableCollection<ChatMessage> DisplayMessages { get; } = new();
+    private readonly ConcurrentDictionary<Guid, long> _processedMessageIds = new();
     private int _selectedDeckTab; // 0 = Roster, 1 = Chat & Files
     private int _unreadChatCount;
     private string _chatInputText = string.Empty;
@@ -572,6 +575,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         try
         {
+            PruneProcessedMessageIds();
+
             bool idle = IdleTracker.Default.IsIdle(300); // 5 minutes inactivity threshold
             int minutes = IdleTracker.Default.GetIdleMinutes();
 
@@ -589,6 +594,38 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                     OnPropertyChanged(nameof(LocalAfkMinutes));
                     OnPropertyChanged(nameof(LocalStatusText));
                 });
+            }
+        }
+        catch { }
+    }
+
+    private void PruneProcessedMessageIds()
+    {
+        try
+        {
+            long now = Environment.TickCount64;
+            const long maxAgeMs = 60_000; // Keep entries for up to 60 seconds
+
+            foreach (var kvp in _processedMessageIds)
+            {
+                if (now - kvp.Value > maxAgeMs)
+                {
+                    _processedMessageIds.TryRemove(kvp.Key, out _);
+                }
+            }
+
+            // Bounded capacity safeguard: if dictionary exceeds limit, remove oldest entries
+            const int maxCapacity = 5_000;
+            if (_processedMessageIds.Count > maxCapacity)
+            {
+                var oldestEntries = _processedMessageIds
+                    .OrderBy(kvp => kvp.Value)
+                    .Take(_processedMessageIds.Count - (maxCapacity / 2));
+
+                foreach (var kvp in oldestEntries)
+                {
+                    _processedMessageIds.TryRemove(kvp.Key, out _);
+                }
             }
         }
         catch { }
@@ -812,6 +849,15 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 var textPayload = System.Text.Json.JsonSerializer.Deserialize<TextMessagePayload>(payloadBytes);
                 if (textPayload != null)
                 {
+                    var ack = LancomPacket.CreateMessageAck(_localId, packet.SenderId, packet.ChannelId, textPayload.MessageId);
+                    if (_processedMessageIds.ContainsKey(textPayload.MessageId))
+                    {
+                        _transport.BroadcastPacket(ack);
+                        return;
+                    }
+
+                    _processedMessageIds[textPayload.MessageId] = Environment.TickCount64;
+
                     Application.Current?.Dispatcher?.Invoke(() =>
                     {
                         var msg = new ChatMessage
@@ -838,7 +884,6 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                     });
 
                     // Send ACK back
-                    var ack = LancomPacket.CreateMessageAck(_localId, packet.SenderId, packet.ChannelId, textPayload.MessageId);
                     _transport.BroadcastPacket(ack);
                 }
             }
@@ -885,11 +930,23 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 var offer = System.Text.Json.JsonSerializer.Deserialize<FileOfferPayload>(payloadBytes);
                 if (offer != null)
                 {
+                    if (_processedMessageIds.ContainsKey(offer.TransferId))
+                    {
+                        return;
+                    }
+
                     Application.Current?.Dispatcher?.Invoke(() =>
                     {
+                        if (_processedMessageIds.ContainsKey(offer.TransferId) || Messages.Any(m => m.TransferId == offer.TransferId))
+                        {
+                            return;
+                        }
+
+                        _processedMessageIds[offer.TransferId] = Environment.TickCount64;
+
                         var fileMsg = new ChatMessage
                         {
-                            Id = Guid.NewGuid(),
+                            Id = offer.TransferId,
                             SenderId = packet.SenderId,
                             SenderName = offer.SenderName,
                             ChannelId = packet.ChannelId,
@@ -1683,6 +1740,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        _processedMessageIds.Clear();
         FileTransferManager.Dispose();
         _subtitleFadeTimer?.Dispose();
         SpeechToTextService.Dispose();
