@@ -2,10 +2,10 @@ name: Build & Package Lancom
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "Extra_version" ]
     tags: [ "v*" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "Extra_version" ]
   workflow_dispatch:
 
 jobs:
