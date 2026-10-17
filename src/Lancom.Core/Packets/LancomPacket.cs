@@ -11,7 +11,10 @@ public enum MessageType : byte
     PresenceBeacon = 4,
     Ping = 5,
     TextPing = 6,
-    PageAlert = 7
+    PageAlert = 7,
+    WhisperVoice = 8,
+    WhisperPttStart = 9,
+    WhisperPttEnd = 10
 }
 
 public class LancomPacket
@@ -21,26 +24,44 @@ public class LancomPacket
     public const byte CurrentVersion = 1;
     public const int HeaderSize = 36; // Fixed 36-byte binary header
 
+    public const byte FlagEmergency = 0x01;
+    public const byte FlagEncrypted = 0x02;
+    public const byte FlagWhisper = 0x04;
+
     public byte Version { get; set; } = CurrentVersion;
     public MessageType Type { get; set; }
     public byte ChannelId { get; set; } = 1;
-    public byte Flags { get; set; } = 0; // 0x01 = Priority/Emergency
+    public byte Flags { get; set; } = 0; // 0x01 = Priority/Emergency, 0x02 = Encrypted, 0x04 = Whisper
     public uint SequenceNumber { get; set; }
     public ulong TimestampMs { get; set; }
     public Guid SenderId { get; set; }
     public Guid TargetUserId { get; set; }
     public byte[] Payload { get; set; } = Array.Empty<byte>();
 
-    public bool IsEmergency => (Flags & 0x01) != 0 || ChannelId == 0xFF;
+    public bool IsEmergency => (Flags & FlagEmergency) != 0 || ChannelId == 0xFF;
+    public bool IsEncrypted => (Flags & FlagEncrypted) != 0;
+    public bool IsWhisper => (Flags & FlagWhisper) != 0 || Type == MessageType.WhisperVoice || TargetUserId != Guid.Empty;
 
     public byte[] Serialize()
     {
-        byte[] payload = Payload;
-        if ((payload == null || payload.Length == 0) && TargetUserId != Guid.Empty && Type == MessageType.PageAlert)
+        byte[] payload = Payload ?? Array.Empty<byte>();
+
+        if (TargetUserId != Guid.Empty &&
+            (Type == MessageType.WhisperVoice || Type == MessageType.WhisperPttStart || Type == MessageType.WhisperPttEnd))
+        {
+            Flags |= FlagWhisper;
+            byte[] whisperPayload = new byte[16 + payload.Length];
+            TargetUserId.TryWriteBytes(whisperPayload.AsSpan(0, 16));
+            if (payload.Length > 0)
+            {
+                payload.CopyTo(whisperPayload.AsSpan(16));
+            }
+            payload = whisperPayload;
+        }
+        else if (payload.Length == 0 && TargetUserId != Guid.Empty && Type == MessageType.PageAlert)
         {
             payload = Encoding.UTF8.GetBytes($"{TargetUserId}|");
         }
-        payload ??= Array.Empty<byte>();
 
         byte[] buffer = new byte[HeaderSize + payload.Length];
         Span<byte> span = buffer;
@@ -97,6 +118,19 @@ public class LancomPacket
             data.Slice(HeaderSize, payloadLen).CopyTo(payload);
         }
 
+        Guid targetUserId = Guid.Empty;
+        if ((flags & FlagWhisper) != 0 || 
+            type == MessageType.WhisperVoice || 
+            type == MessageType.WhisperPttStart || 
+            type == MessageType.WhisperPttEnd)
+        {
+            if (payload.Length >= 16)
+            {
+                targetUserId = new Guid(payload.AsSpan(0, 16));
+                payload = payload[16..];
+            }
+        }
+
         packet = new LancomPacket
         {
             Version = version,
@@ -106,6 +140,7 @@ public class LancomPacket
             SequenceNumber = seq,
             TimestampMs = timestamp,
             SenderId = senderId,
+            TargetUserId = targetUserId,
             Payload = payload
         };
 
@@ -118,6 +153,63 @@ public class LancomPacket
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Creates a 1-on-1 whisper voice packet targeted to a specific peer.
+    /// </summary>
+    public static LancomPacket CreateWhisperVoice(Guid senderId, Guid targetUserId, uint seq, ulong timestamp, byte[] opusPayload, bool isEncrypted = false)
+    {
+        byte flags = FlagWhisper;
+        if (isEncrypted)
+        {
+            flags |= FlagEncrypted;
+        }
+
+        return new LancomPacket
+        {
+            Type = MessageType.WhisperVoice,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            SequenceNumber = seq,
+            TimestampMs = timestamp != 0 ? timestamp : (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Flags = flags,
+            Payload = opusPayload ?? Array.Empty<byte>()
+        };
+    }
+
+    /// <summary>
+    /// Creates a 1-on-1 whisper PTT start packet announcing transmission start to a specific peer.
+    /// </summary>
+    public static LancomPacket CreateWhisperPttStart(Guid senderId, Guid targetUserId, string senderName)
+    {
+        byte[] payloadBytes = Encoding.UTF8.GetBytes(senderName ?? string.Empty);
+
+        return new LancomPacket
+        {
+            Type = MessageType.WhisperPttStart,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Flags = FlagWhisper,
+            Payload = payloadBytes
+        };
+    }
+
+    /// <summary>
+    /// Creates a 1-on-1 whisper PTT end packet announcing transmission completion to a specific peer.
+    /// </summary>
+    public static LancomPacket CreateWhisperPttEnd(Guid senderId, Guid targetUserId)
+    {
+        return new LancomPacket
+        {
+            Type = MessageType.WhisperPttEnd,
+            SenderId = senderId,
+            TargetUserId = targetUserId,
+            TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Flags = FlagWhisper,
+            Payload = Array.Empty<byte>()
+        };
     }
 
     public static LancomPacket CreatePageAlert(Guid senderId, Guid targetUserId, string senderName, byte channelId)

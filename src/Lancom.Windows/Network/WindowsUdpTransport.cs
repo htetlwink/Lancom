@@ -172,6 +172,25 @@ public class WindowsUdpTransport : IDisposable
         }
     }
 
+    public void SendTo(LancomPacket packet, IPEndPoint destination)
+    {
+        packet.SenderId = _localId;
+        if (packet.TimestampMs == 0)
+        {
+            packet.TimestampMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+
+        byte[] raw = packet.Serialize();
+
+        if (_relayEndPoint != null)
+        {
+            SendRaw(raw, _relayEndPoint);
+            return;
+        }
+
+        SendRaw(raw, destination);
+    }
+
     private void SendRaw(byte[] data, IPEndPoint destination)
     {
         if (_udpClient == null) return;

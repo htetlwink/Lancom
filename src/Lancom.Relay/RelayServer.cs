@@ -109,6 +109,29 @@ public class RelayServer : IDisposable
     {
         if (_udpClient == null) return;
 
+        // Targeted 1-on-1 forwarding (e.g. Whisper / direct packets)
+        if (packet.TargetUserId != Guid.Empty)
+        {
+            if (_clients.TryGetValue(packet.TargetUserId, out var targetClient))
+            {
+                // Do not echo back to the sender
+                if (!targetClient.EndPoint.Equals(senderEndPoint) && targetClient.IsActive())
+                {
+                    try
+                    {
+                        _udpClient.Send(rawBytes, rawBytes.Length, targetClient.EndPoint);
+                        Interlocked.Increment(ref _packetsForwarded);
+                        Interlocked.Add(ref _bytesForwarded, rawBytes.Length);
+                    }
+                    catch
+                    {
+                        // Non-blocking drop on failure
+                    }
+                }
+                return;
+            }
+        }
+
         foreach (var client in _clients.Values)
         {
             // Do not echo back to the sender

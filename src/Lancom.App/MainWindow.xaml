@@ -64,13 +64,16 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <!-- Channel Badge Pill with App Icon -->
+                    <!-- Channel Badge Pill with App Icon & E2EE Indicator -->
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0">
-                        <Image Source="app.ico" Width="18" Height="18" Margin="0,0,8,0" VerticalAlignment="Center" />
-                        <Border Background="#242731" CornerRadius="8" Padding="10,4">
+                        <Image Source="app.ico" Width="18" Height="18" Margin="0,0,6,0" VerticalAlignment="Center" />
+                        <Border Background="#242731" CornerRadius="8" Padding="8,4">
                             <TextBlock Text="{Binding CurrentChannelDisplay}" 
                                        Foreground="{StaticResource BrushAccentEmerald}" 
                                        FontWeight="Bold" FontSize="12" VerticalAlignment="Center" />
+                        </Border>
+                        <Border Background="#1C2321" BorderBrush="#2D483A" BorderThickness="1" CornerRadius="6" Padding="5,2" Margin="5,0,0,0" ToolTip="{Binding E2eeStatusText}">
+                            <TextBlock Text="{Binding E2eeIcon}" FontSize="11" VerticalAlignment="Center" />
                         </Border>
                     </StackPanel>
 
@@ -84,6 +87,9 @@
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding IsTransmitting}" Value="True">
                                             <Setter Property="Fill" Value="{StaticResource BrushAccentAmber}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsReceivingWhisper}" Value="True">
+                                            <Setter Property="Fill" Value="#D946EF" />
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding IsReceiving}" Value="True">
                                             <Setter Property="Fill" Value="{StaticResource BrushAccentEmerald}" />
@@ -147,11 +153,30 @@
                                        Foreground="#FF8A80" FontWeight="Bold" FontSize="11" 
                                        VerticalAlignment="Center" />
                             <Button Grid.Column="1" Content="▶ Play" Click="PlayVoicemail_Click" 
-                                    Background="#442226" Foreground="#FFD180" BorderThickness="0" 
-                                    Padding="8,3" FontSize="10" FontWeight="Bold" Cursor="Hand" Margin="0,0,6,0" />
+                                     Background="#442226" Foreground="#FFD180" BorderThickness="0" 
+                                     Padding="8,3" FontSize="10" FontWeight="Bold" Cursor="Hand" Margin="0,0,6,0" />
                             <Button Grid.Column="2" Content="✕" Click="DismissVoicemail_Click" 
-                                    Background="Transparent" Foreground="#A5AAB8" BorderThickness="0" 
-                                    Padding="6,3" FontSize="10" Cursor="Hand" ToolTip="Dismiss Voicemails" />
+                                     Background="Transparent" Foreground="#A5AAB8" BorderThickness="0" 
+                                     Padding="6,3" FontSize="10" Cursor="Hand" ToolTip="Dismiss Voicemails" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Active 1-on-1 Whisper Target Banner -->
+                    <Border Visibility="{Binding WhisperBannerVisibility}" 
+                            Background="#281335" BorderBrush="#C026D3" BorderThickness="1" 
+                            CornerRadius="8" Padding="10,6" Margin="0,0,0,10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="🟣 PRIVATE LINE:" Foreground="#E879F9" FontWeight="Bold" FontSize="11" Margin="0,0,6,0" />
+                                <TextBlock Text="{Binding WhisperTargetName}" Foreground="#FFFFFF" FontWeight="Bold" FontSize="11" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="✕ CANCEL" Click="ClearWhisper_Click" 
+                                    Background="#4A1D5A" Foreground="#F5D0FE" BorderThickness="0" 
+                                    Padding="8,3" FontSize="10" FontWeight="Bold" Cursor="Hand" ToolTip="Return to Channel Broadcast" />
                         </Grid>
                     </Border>
 
@@ -198,6 +223,32 @@
                             <TextBlock Text="{Binding PttKeyDisplay}" FontSize="11" Foreground="{StaticResource BrushTextMuted}" 
                                        HorizontalAlignment="Center" Margin="0,2,0,0" />
                         </StackPanel>
+                    </Border>
+
+                    <!-- Live Subtitle / Speech-to-Text Banner -->
+                    <Border CornerRadius="8" Padding="10,7" Margin="0,8,0,0" Background="#161922" BorderBrush="#2D3244" BorderThickness="1">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasSubtitle}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="💬" FontSize="11" VerticalAlignment="Top" Margin="0,1,6,0" />
+                            <TextBlock Grid.Column="1" TextWrapping="Wrap" FontSize="11" LineHeight="16">
+                                <Run Text="{Binding SubtitleSender, Mode=OneWay}" FontWeight="Bold" Foreground="#6EE7B7" />
+                                <Run Text=": " Foreground="#8A92A6" />
+                                <Run Text="{Binding SubtitleText, Mode=OneWay}" Foreground="#F1F3F9" />
+                            </TextBlock>
+                        </Grid>
                     </Border>
 
                     <!-- Quick Action Row: Instant Replay ("Say Again") & Local AFK Status -->
@@ -307,12 +358,19 @@
                                                            Foreground="{StaticResource BrushTextMuted}" FontSize="11" 
                                                            VerticalAlignment="Center" Margin="0,0,8,0" />
                                                 
-                                                <!-- Targeted Mention / Page Button -->
-                                                <Button Grid.Column="3" Content="🔔 PAGE" Click="PagePeer_Click"
-                                                        Background="#1E2330" Foreground="{StaticResource BrushAccentAmber}" 
-                                                        BorderBrush="#363C4E" BorderThickness="1"
-                                                        Padding="6,2" FontSize="10" FontWeight="Bold" Cursor="Hand"
-                                                        ToolTip="Send an urgent paging alert sound and notification to this colleague" />
+                                                <!-- Targeted Mention / Page & Whisper Buttons -->
+                                                <StackPanel Grid.Column="3" Orientation="Horizontal">
+                                                    <Button Content="🟣 WHISPER" Click="WhisperPeer_Click"
+                                                            Background="#2A1733" Foreground="#E879F9" 
+                                                            BorderBrush="#4C255E" BorderThickness="1"
+                                                            Padding="6,2" FontSize="10" FontWeight="Bold" Cursor="Hand" Margin="0,0,4,0"
+                                                            ToolTip="Open a 1-on-1 private walkie-talkie line with this colleague" />
+                                                    <Button Content="🔔 PAGE" Click="PagePeer_Click"
+                                                            Background="#1E2330" Foreground="{StaticResource BrushAccentAmber}" 
+                                                            BorderBrush="#363C4E" BorderThickness="1"
+                                                            Padding="6,2" FontSize="10" FontWeight="Bold" Cursor="Hand"
+                                                            ToolTip="Send an urgent paging alert sound and notification to this colleague" />
+                                                </StackPanel>
                                             </Grid>
                                         </Border>
                                     </DataTemplate>
@@ -387,9 +445,30 @@
                                 FontSize="10" Foreground="#656978" Margin="0,0,0,10" />
 
                     <!-- VHF Radio DSP Filter -->
-                    <Border Background="#1E212B" BorderBrush="#2C303E" BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,12">
+                    <Border Background="#1E212B" BorderBrush="#2C303E" BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,10">
                         <CheckBox Content="Radio DSP VHF Filter (Tactical Walkie-Talkie Sound)" 
                                   IsChecked="{Binding EnableRadioFilter}" />
+                    </Border>
+
+                    <!-- E2EE Channel Encryption Passphrase -->
+                    <TextBlock Text="CHANNEL ENCRYPTION KEY / PASSPHRASE (E2EE)" FontSize="10" FontWeight="Bold" Foreground="#A5AAB8" Margin="0,0,0,4" />
+                    <TextBox Text="{Binding ChannelKey, UpdateSourceTrigger=PropertyChanged}" 
+                             Height="32" Margin="0,0,0,4"
+                             ToolTip="All colleagues using this exact passphrase communicate via hardware-accelerated AES-256-GCM. Leave blank for open channel." />
+                    <TextBlock Text="Hardware-accelerated AES-256-GCM. Leave blank for standard open channel." 
+                               FontSize="10" Foreground="#656978" Margin="0,0,0,10" />
+
+                    <!-- Local Live Subtitles (Whisper AI) -->
+                    <Border Background="#1E212B" BorderBrush="#2C303E" BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,12">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <CheckBox Grid.Column="0" Content="Local AI Live Subtitles (Whisper Speech-to-Text)" 
+                                      IsChecked="{Binding EnableSubtitles}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" Text="{Binding SttModelStatus}" FontSize="10" Foreground="#6EE7B7" VerticalAlignment="Center" Margin="6,0,0,0" />
+                        </Grid>
                     </Border>
 
                     <!-- Save & Done Button -->

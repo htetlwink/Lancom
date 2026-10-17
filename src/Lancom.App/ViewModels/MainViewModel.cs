@@ -10,6 +10,8 @@ using Lancom.Core.Codec;
 using Lancom.Core.Dsp;
 using Lancom.Core.Network;
 using Lancom.Core.Packets;
+using Lancom.Core.Security;
+using Lancom.App.Subtitles;
 using Lancom.Windows.Audio;
 using Lancom.Windows.Input;
 using Lancom.Windows.Network;
@@ -32,6 +34,8 @@ public class LancomSettings
     public RogerBeepType SelectedRogerBeep { get; set; } = RogerBeepType.MotorolaTactical;
     public bool EnableRadioFilter { get; set; } = true;
     public string RelayHost { get; set; } = string.Empty;
+    public string ChannelKey { get; set; } = string.Empty;
+    public bool EnableSubtitles { get; set; } = true;
 }
 
 public class MainViewModel : INotifyPropertyChanged, IDisposable
@@ -72,6 +76,22 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly object _incomingPcmLock = new();
     private Guid _incomingSenderId = Guid.Empty;
     private string _incomingSenderName = "Colleague";
+
+    // Security & E2EE Engine
+    private readonly ChannelCrypto _channelCrypto = new();
+    private string _channelKey = string.Empty;
+
+    // Speech-to-Text & Live Subtitles Engine
+    public SpeechToTextService SpeechToTextService { get; } = new();
+    private bool _enableSubtitles = true;
+    private string _subtitleText = string.Empty;
+    private string _subtitleSender = string.Empty;
+    private bool _isSubtitleVisible;
+    private readonly Timer _subtitleFadeTimer;
+
+    // 1-on-1 Whisper State
+    private PeerInfo? _selectedWhisperPeer;
+    private bool _isReceivingWhisper;
 
     public event Action<string, string>? OnPageAlertReceived;
 
@@ -296,6 +316,120 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         IsSettingsOpen = !IsSettingsOpen;
     }
+
+    #region E2EE Properties
+    public string ChannelKey
+    {
+        get => _channelKey;
+        set
+        {
+            if (SetField(ref _channelKey, value))
+            {
+                _channelCrypto.SetPassphrase(value);
+                OnPropertyChanged(nameof(IsEncrypted));
+                OnPropertyChanged(nameof(E2eeStatusText));
+                OnPropertyChanged(nameof(E2eeIcon));
+                SaveSettings();
+            }
+        }
+    }
+
+    public bool IsEncrypted => _channelCrypto.IsEnabled;
+    public string E2eeStatusText => IsEncrypted ? "E2EE ENCRYPTED" : "OPEN CHANNEL";
+    public string E2eeIcon => IsEncrypted ? "🔒" : "🔓";
+    #endregion
+
+    #region Whisper Properties
+    public PeerInfo? SelectedWhisperPeer
+    {
+        get => _selectedWhisperPeer;
+        set
+        {
+            if (SetField(ref _selectedWhisperPeer, value))
+            {
+                OnPropertyChanged(nameof(IsWhisperActive));
+                OnPropertyChanged(nameof(WhisperTargetName));
+                OnPropertyChanged(nameof(WhisperBannerVisibility));
+            }
+        }
+    }
+
+    public bool IsWhisperActive => _selectedWhisperPeer != null;
+    public string WhisperTargetName => _selectedWhisperPeer?.DisplayName ?? string.Empty;
+    public Visibility WhisperBannerVisibility => IsWhisperActive ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool IsReceivingWhisper
+    {
+        get => _isReceivingWhisper;
+        private set => SetField(ref _isReceivingWhisper, value);
+    }
+
+    public void SetWhisperPeer(PeerInfo peer)
+    {
+        if (peer == null) return;
+        if (SelectedWhisperPeer?.Id == peer.Id)
+        {
+            SelectedWhisperPeer = null; // Toggle off
+        }
+        else
+        {
+            SelectedWhisperPeer = peer;
+        }
+    }
+
+    public void ClearWhisper()
+    {
+        SelectedWhisperPeer = null;
+    }
+    #endregion
+
+    #region Subtitles & STT Properties
+    public bool EnableSubtitles
+    {
+        get => _enableSubtitles;
+        set
+        {
+            if (SetField(ref _enableSubtitles, value))
+            {
+                SpeechToTextService.IsEnabled = value;
+                SaveSettings();
+            }
+        }
+    }
+
+    public string SubtitleText
+    {
+        get => _subtitleText;
+        private set
+        {
+            if (SetField(ref _subtitleText, value))
+            {
+                OnPropertyChanged(nameof(HasSubtitle));
+            }
+        }
+    }
+
+    public string SubtitleSender
+    {
+        get => _subtitleSender;
+        private set => SetField(ref _subtitleSender, value);
+    }
+
+    public bool IsSubtitleVisible
+    {
+        get => _isSubtitleVisible;
+        private set
+        {
+            if (SetField(ref _isSubtitleVisible, value))
+            {
+                OnPropertyChanged(nameof(HasSubtitle));
+            }
+        }
+    }
+
+    public bool HasSubtitle => !string.IsNullOrEmpty(_subtitleText) && _isSubtitleVisible;
+    public string SttModelStatus => SpeechToTextService.ModelStatus;
+    #endregion
     #endregion
 
     public MainViewModel()
@@ -308,6 +442,38 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _transport = new WindowsUdpTransport(_localId, _displayName, _peerManager);
         _pttHook = new RawInputPttHook();
         _jitterBuffer = new JitterBuffer(1);
+
+        // Initialize Speech-to-Text subtitle fade timer
+        _subtitleFadeTimer = new Timer(_ =>
+        {
+            Application.Current?.Dispatcher?.BeginInvoke(() =>
+            {
+                IsSubtitleVisible = false;
+                SubtitleText = string.Empty;
+            });
+        }, null, Timeout.Infinite, Timeout.Infinite);
+
+        // Bind Speech-to-Text transcript events
+        SpeechToTextService.OnTranscriptReceived += (sender, e) =>
+        {
+            Application.Current?.Dispatcher?.BeginInvoke(() =>
+            {
+                SubtitleSender = e.IsWhisper ? $"🟣 {e.SenderName} (Whisper)" : e.SenderName;
+                SubtitleText = e.Text;
+                IsSubtitleVisible = true;
+                _subtitleFadeTimer.Change(7000, Timeout.Infinite);
+            });
+        };
+
+        // Initialize STT model asynchronously in user-mode
+        Task.Run(async () =>
+        {
+            await SpeechToTextService.InitializeAsync();
+            Application.Current?.Dispatcher?.BeginInvoke(() =>
+            {
+                OnPropertyChanged(nameof(SttModelStatus));
+            });
+        });
 
         // Bind events
         _pttHook.OnPttStateChanged += HandlePttStateChanged;
@@ -426,15 +592,31 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 _playback.PlayPcm(SfxGenerator.GenerateMicClick(0.3f));
 
                 IsTransmitting = true;
-                ActiveSpeakerName = "YOU ARE TRANSMITTING";
-
-                // Broadcast PTT Start packet
-                var pttStart = new LancomPacket
+                if (IsWhisperActive && SelectedWhisperPeer != null)
                 {
-                    Type = MessageType.PttStart,
-                    SequenceNumber = Interlocked.Increment(ref _sequenceCounter)
-                };
-                _transport.BroadcastPacket(pttStart);
+                    ActiveSpeakerName = $"WHISPERING: {SelectedWhisperPeer.DisplayName.ToUpper()}";
+
+                    var whisperStart = LancomPacket.CreateWhisperPttStart(_localId, SelectedWhisperPeer.Id, DisplayName);
+                    whisperStart.SequenceNumber = Interlocked.Increment(ref _sequenceCounter);
+                    _transport.BroadcastPacket(whisperStart);
+                    if (SelectedWhisperPeer.EndPoint != null)
+                    {
+                        _transport.SendTo(whisperStart, SelectedWhisperPeer.EndPoint);
+                    }
+                }
+                else
+                {
+                    ActiveSpeakerName = "YOU ARE TRANSMITTING";
+
+                    // Broadcast PTT Start packet
+                    var pttStart = new LancomPacket
+                    {
+                        Type = MessageType.PttStart,
+                        SequenceNumber = Interlocked.Increment(ref _sequenceCounter),
+                        Flags = _channelCrypto.IsEnabled ? LancomPacket.FlagEncrypted : (byte)0
+                    };
+                    _transport.BroadcastPacket(pttStart);
+                }
             }
             else
             {
@@ -452,14 +634,29 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 if (roger.Length > 0) _playback.PlayPcm(roger);
                 if (squelch.Length > 0) _playback.PlayPcm(squelch);
 
-                // Broadcast PTT End packet (send 2 copies for network loss resilience)
-                var pttEnd = new LancomPacket
+                if (IsWhisperActive && SelectedWhisperPeer != null)
                 {
-                    Type = MessageType.PttEnd,
-                    SequenceNumber = Interlocked.Increment(ref _sequenceCounter)
-                };
-                _transport.BroadcastPacket(pttEnd);
-                _transport.BroadcastPacket(pttEnd);
+                    var whisperEnd = LancomPacket.CreateWhisperPttEnd(_localId, SelectedWhisperPeer.Id);
+                    whisperEnd.SequenceNumber = Interlocked.Increment(ref _sequenceCounter);
+                    _transport.BroadcastPacket(whisperEnd);
+                    _transport.BroadcastPacket(whisperEnd);
+                    if (SelectedWhisperPeer.EndPoint != null)
+                    {
+                        _transport.SendTo(whisperEnd, SelectedWhisperPeer.EndPoint);
+                    }
+                }
+                else
+                {
+                    // Broadcast PTT End packet (send 2 copies for network loss resilience)
+                    var pttEnd = new LancomPacket
+                    {
+                        Type = MessageType.PttEnd,
+                        SequenceNumber = Interlocked.Increment(ref _sequenceCounter),
+                        Flags = _channelCrypto.IsEnabled ? LancomPacket.FlagEncrypted : (byte)0
+                    };
+                    _transport.BroadcastPacket(pttEnd);
+                    _transport.BroadcastPacket(pttEnd);
+                }
             }
         });
     }
@@ -479,19 +676,91 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         byte[] encoded = _opusCodec.Encode(rawPcm);
         if (encoded.Length == 0) return;
 
-        // Send Audio Packet
-        var audioPacket = new LancomPacket
-        {
-            Type = MessageType.AudioData,
-            SequenceNumber = Interlocked.Increment(ref _sequenceCounter),
-            Payload = encoded
-        };
+        uint seq = Interlocked.Increment(ref _sequenceCounter);
+        ulong ts = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-        _transport.BroadcastPacket(audioPacket);
+        byte[] payload = encoded;
+        bool isEncrypted = _channelCrypto.IsEnabled;
+        if (isEncrypted)
+        {
+            payload = _channelCrypto.Encrypt(seq, ts, encoded);
+        }
+
+        if (IsWhisperActive && SelectedWhisperPeer != null)
+        {
+            var whisperPacket = LancomPacket.CreateWhisperVoice(_localId, SelectedWhisperPeer.Id, seq, ts, payload, isEncrypted);
+            _transport.BroadcastPacket(whisperPacket);
+            if (SelectedWhisperPeer.EndPoint != null)
+            {
+                _transport.SendTo(whisperPacket, SelectedWhisperPeer.EndPoint);
+            }
+        }
+        else
+        {
+            byte flags = 0;
+            if (isEncrypted) flags |= LancomPacket.FlagEncrypted;
+
+            var audioPacket = new LancomPacket
+            {
+                Type = MessageType.AudioData,
+                SequenceNumber = seq,
+                TimestampMs = ts,
+                Flags = flags,
+                Payload = payload
+            };
+            _transport.BroadcastPacket(audioPacket);
+        }
     }
 
     private void HandlePacketReceived(LancomPacket packet, IPEndPoint sender)
     {
+        // Check Whisper Packets
+        if (packet.IsWhisper || packet.Type == MessageType.WhisperVoice || packet.Type == MessageType.WhisperPttStart || packet.Type == MessageType.WhisperPttEnd)
+        {
+            // If target is specified and not us, ignore
+            if (packet.TargetUserId != Guid.Empty && packet.TargetUserId != _localId)
+            {
+                return;
+            }
+
+            if (packet.Type == MessageType.WhisperPttStart)
+            {
+                _jitterBuffer.Reset();
+                _opusCodec.Reset();
+                _radioDsp.Reset();
+
+                lock (_incomingPcmLock)
+                {
+                    _incomingPcmAccumulator.Clear();
+                    _incomingSenderId = packet.SenderId;
+                    var peer = Peers.FirstOrDefault(p => p.Id == packet.SenderId);
+                    string senderName = peer != null ? peer.DisplayName : (packet.Payload.Length > 0 ? System.Text.Encoding.UTF8.GetString(packet.Payload) : "Colleague");
+                    _incomingSenderName = senderName;
+                }
+
+                Application.Current?.Dispatcher?.Invoke(() =>
+                {
+                    IsReceiving = true;
+                    IsReceivingWhisper = true;
+                    ActiveSpeakerName = $"🟣 WHISPER: {_incomingSenderName}";
+                });
+
+                // Distinctive soft whisper chime
+                _playback.PlayPcm(SfxGenerator.GeneratePagerChime(0.45f));
+                return;
+            }
+            else if (packet.Type == MessageType.WhisperVoice)
+            {
+                _jitterBuffer.Push(packet);
+                return;
+            }
+            else if (packet.Type == MessageType.WhisperPttEnd)
+            {
+                FinishIncomingTransmission(isWhisper: true);
+                return;
+            }
+        }
+
         // Filter out if not on current channel (unless All-Call Emergency 0xFF)
         if (packet.ChannelId != 0xFF && packet.ChannelId != CurrentChannel) return;
 
@@ -530,6 +799,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             Application.Current?.Dispatcher?.Invoke(() =>
             {
                 IsReceiving = true;
+                IsReceivingWhisper = false;
                 var peer = Peers.FirstOrDefault(p => p.Id == packet.SenderId);
                 ActiveSpeakerName = peer != null ? $"{peer.DisplayName} (TRANSMITTING)" : "INCOMING TRANSMISSION";
             });
@@ -543,56 +813,90 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         else if (packet.Type == MessageType.PttEnd)
         {
-            lock (_incomingPcmLock)
-            {
-                if (_incomingPcmAccumulator.Count >= AudioConfig.SampleRate * 2 / 2) // at least 0.5s of audio
-                {
-                    var msg = new VoiceMessage(_incomingSenderId, _incomingSenderName, _incomingPcmAccumulator.ToArray());
-                    ReplayBuffer.Add(msg);
-
-                    if (_isLocalAfk)
-                    {
-                        VoicemailBox.AddVoicemail(msg);
-                    }
-
-                    Application.Current?.Dispatcher?.BeginInvoke(() =>
-                    {
-                        OnPropertyChanged(nameof(CanReplay));
-                        OnPropertyChanged(nameof(LastReplayInfo));
-                        OnPropertyChanged(nameof(UnreadVoicemailCount));
-                        OnPropertyChanged(nameof(HasUnreadVoicemails));
-                        OnPropertyChanged(nameof(VoicemailBannerVisibility));
-                        OnPropertyChanged(nameof(VoicemailBannerText));
-                    });
-                }
-                _incomingPcmAccumulator.Clear();
-            }
-
-            Application.Current?.Dispatcher?.Invoke(() =>
-            {
-                IsReceiving = false;
-                ActiveSpeakerLevel = 0.0f;
-                ActiveSpeakerName = "Channel Idle";
-            });
-
-            // Play Roger Beep + Squelch tail
-            byte[] roger = SfxGenerator.GenerateRogerBeep(_selectedRogerBeep, 0.4f);
-            byte[] squelch = SfxGenerator.GenerateSquelchTail(0.25f);
-            if (roger.Length > 0) _playback.PlayPcm(roger);
-            if (squelch.Length > 0) _playback.PlayPcm(squelch);
+            FinishIncomingTransmission(isWhisper: false);
         }
+    }
+
+    private void FinishIncomingTransmission(bool isWhisper)
+    {
+        byte[]? accumulatedBytes = null;
+        string senderName = "Colleague";
+
+        lock (_incomingPcmLock)
+        {
+            if (_incomingPcmAccumulator.Count >= AudioConfig.SampleRate * 2 / 2) // at least 0.5s of audio
+            {
+                accumulatedBytes = _incomingPcmAccumulator.ToArray();
+                senderName = _incomingSenderName;
+
+                var msg = new VoiceMessage(_incomingSenderId, _incomingSenderName, accumulatedBytes);
+                ReplayBuffer.Add(msg);
+
+                if (_isLocalAfk)
+                {
+                    VoicemailBox.AddVoicemail(msg);
+                }
+
+                Application.Current?.Dispatcher?.BeginInvoke(() =>
+                {
+                    OnPropertyChanged(nameof(CanReplay));
+                    OnPropertyChanged(nameof(LastReplayInfo));
+                    OnPropertyChanged(nameof(UnreadVoicemailCount));
+                    OnPropertyChanged(nameof(HasUnreadVoicemails));
+                    OnPropertyChanged(nameof(VoicemailBannerVisibility));
+                    OnPropertyChanged(nameof(VoicemailBannerText));
+                });
+            }
+            _incomingPcmAccumulator.Clear();
+        }
+
+        // Pass to Speech-to-Text service if audio was accumulated
+        if (accumulatedBytes != null && accumulatedBytes.Length > 0)
+        {
+            SpeechToTextService.EnqueueAudioSegment(senderName, accumulatedBytes, isWhisper);
+        }
+
+        Application.Current?.Dispatcher?.Invoke(() =>
+        {
+            IsReceiving = false;
+            IsReceivingWhisper = false;
+            ActiveSpeakerLevel = 0.0f;
+            ActiveSpeakerName = "Channel Idle";
+        });
+
+        // Play Roger Beep + Squelch tail
+        byte[] roger = SfxGenerator.GenerateRogerBeep(_selectedRogerBeep, 0.4f);
+        byte[] squelch = SfxGenerator.GenerateSquelchTail(0.25f);
+        if (roger.Length > 0) _playback.PlayPcm(roger);
+        if (squelch.Length > 0) _playback.PlayPcm(squelch);
     }
 
     private void HandleJitterPacketReady(LancomPacket packet)
     {
+        byte[] payload = packet.Payload;
+
+        // Decrypt if packet was encrypted
+        if (packet.IsEncrypted)
+        {
+            if (_channelCrypto.TryDecrypt(packet.SequenceNumber, packet.TimestampMs, packet.Payload, out var decrypted))
+            {
+                payload = decrypted;
+            }
+            else
+            {
+                // Key mismatch or tampered: drop encrypted frame safely
+                return;
+            }
+        }
+
         // Decode Opus to PCM
-        byte[] pcm = _opusCodec.Decode(packet.Payload);
+        byte[] pcm = _opusCodec.Decode(payload);
         if (pcm.Length == 0) return;
 
         // Apply authentic Walkie-Talkie DSP filter & saturation
         _radioDsp.ProcessPcm(pcm, 0, pcm.Length);
 
-        // Accumulate audio in memory for Instant Replay / Voicemail
+        // Accumulate audio in memory for Instant Replay / Voicemail / Speech-to-Text
         lock (_incomingPcmLock)
         {
             _incomingPcmAccumulator.AddRange(pcm);
@@ -778,6 +1082,10 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                     _enableRadioFilter = s.EnableRadioFilter;
                     _selectedRogerBeep = s.SelectedRogerBeep;
                     _relayHost = s.RelayHost ?? string.Empty;
+                    _channelKey = s.ChannelKey ?? string.Empty;
+                    _enableSubtitles = s.EnableSubtitles;
+                    _channelCrypto.SetPassphrase(_channelKey);
+                    SpeechToTextService.IsEnabled = _enableSubtitles;
 
                     var preset = PttKeyPresets.FirstOrDefault(p => p.VKey == s.TargetVKey);
                     if (preset != null)
@@ -822,7 +1130,9 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 TargetVKey = SelectedPttPreset?.VKey ?? 0x14,
                 SelectedRogerBeep = SelectedRogerBeep,
                 EnableRadioFilter = EnableRadioFilter,
-                RelayHost = RelayHost
+                RelayHost = RelayHost,
+                ChannelKey = ChannelKey,
+                EnableSubtitles = EnableSubtitles
             };
             File.WriteAllText(file, JsonSerializer.Serialize(s));
         }
@@ -847,6 +1157,9 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        _subtitleFadeTimer?.Dispose();
+        SpeechToTextService.Dispose();
+        _channelCrypto.Dispose();
         _afkTimer?.Dispose();
         _pttHook.Dispose();
         _capture.Dispose();

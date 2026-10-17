@@ -204,6 +204,19 @@ public partial class MainWindow : Window
         ViewModel.IsSettingsOpen = false;
     }
 
+    private void WhisperPeer_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement elem && elem.DataContext is PeerInfo peer)
+        {
+            ViewModel.SetWhisperPeer(peer);
+        }
+    }
+
+    private void ClearWhisper_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.ClearWhisper();
+    }
+
     private void SettingsDrawer_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         e.Handled = false;
