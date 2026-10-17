@@ -53,8 +53,12 @@ public sealed class SpeechToTextService : IDisposable, IAsyncDisposable
 
             string appDir = AppDomain.CurrentDomain.BaseDirectory;
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string targetDir = Path.Combine(localAppData, "Lancom", "models");
+            string lancomBaseDir = Path.Combine(localAppData, "Lancom");
+            string targetDir = Path.Combine(lancomBaseDir, "models");
             string targetPath = Path.Combine(targetDir, "ggml-tiny.bin");
+
+            // Ensure native whisper runtime binaries are extracted to %LOCALAPPDATA%\Lancom\runtimes\win-x64
+            EnsureNativeRuntimesExtracted(lancomBaseDir);
 
             string? modelPath = null;
             if (File.Exists(Path.Combine(appDir, "models", "ggml-tiny.bin")))
@@ -188,6 +192,41 @@ public sealed class SpeechToTextService : IDisposable, IAsyncDisposable
                     Debug.WriteLine($"[SpeechToTextService] Transcription processing error: {ex}");
                 }
             }
+        }
+    }
+
+    private static void EnsureNativeRuntimesExtracted(string lancomBaseDir)
+    {
+        try
+        {
+            string runtimesWinX64 = Path.Combine(lancomBaseDir, "runtimes", "win-x64");
+            Directory.CreateDirectory(runtimesWinX64);
+
+            var assembly = typeof(SpeechToTextService).Assembly;
+            string[] files = ["ggml-base-whisper.dll", "ggml-cpu-whisper.dll", "ggml-whisper.dll", "whisper.dll"];
+
+            foreach (var file in files)
+            {
+                string targetPath = Path.Combine(runtimesWinX64, file);
+                if (!File.Exists(targetPath) || new FileInfo(targetPath).Length == 0)
+                {
+                    string resourceName = $"Lancom.App.runtimes.win_x64.{file}";
+                    using var stream = assembly.GetManifestResourceStream(resourceName);
+                    if (stream != null)
+                    {
+                        using var fileStream = File.Create(targetPath);
+                        stream.CopyTo(fileStream);
+                    }
+                }
+            }
+
+            // Point Whisper.net to the extracted runtimes directory
+            Whisper.net.LibraryLoader.RuntimeOptions.LibraryPath = Path.Combine(lancomBaseDir, "runtimes.sentinel");
+            Whisper.net.LibraryLoader.RuntimeOptions.RuntimeLibraryOrder = [Whisper.net.LibraryLoader.RuntimeLibrary.Cpu];
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SpeechToTextService] Failed to extract native runtimes: {ex.Message}");
         }
     }
 
