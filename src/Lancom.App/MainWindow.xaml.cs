@@ -202,6 +202,11 @@ public partial class MainWindow : Window
         ViewModel.StartRebindingKey();
     }
 
+    private void PreviewRogerBeep_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.PreviewRogerBeep();
+    }
+
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
         ViewModel.ToggleSettings();

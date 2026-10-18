@@ -75,6 +75,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly RawInputPttHook _pttHook;
     private readonly JitterBuffer _jitterBuffer;
     private readonly Timer _afkTimer;
+    private readonly Timer _incomingTransmissionWatchdogTimer;
+    private volatile bool _isIncomingWhisperActive;
 
     // AFK, Replay, Voicemail, and Paging State
     private bool _isLocalAfk;
@@ -348,6 +350,17 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    public void PreviewRogerBeep()
+    {
+        byte[] roger = SfxGenerator.GenerateRogerBeep(_selectedRogerBeep, 0.45f);
+        byte[] squelch = SfxGenerator.GenerateSquelchTail(0.25f);
+        byte[] combined = SfxGenerator.CombineAudio(roger, squelch);
+        if (combined.Length > 0)
+        {
+            _playback.PlayPcm(combined);
+        }
+    }
+
     public bool EnableRadioFilter
     {
         get => _enableRadioFilter;
@@ -594,6 +607,15 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             });
         }, null, Timeout.Infinite, Timeout.Infinite);
 
+        // Initialize incoming transmission watchdog timer (recovers safely if PttEnd packet is dropped)
+        _incomingTransmissionWatchdogTimer = new Timer(_ =>
+        {
+            Application.Current?.Dispatcher?.BeginInvoke(() =>
+            {
+                FinishIncomingTransmission(_isIncomingWhisperActive);
+            });
+        }, null, Timeout.Infinite, Timeout.Infinite);
+
         // Bind Speech-to-Text transcript events
         SpeechToTextService.OnTranscriptReceived += (sender, e) =>
         {
@@ -810,31 +832,39 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 // Play local Roger Beep + Squelch
                 byte[] roger = SfxGenerator.GenerateRogerBeep(_selectedRogerBeep);
                 byte[] squelch = SfxGenerator.GenerateSquelchTail();
-                if (roger.Length > 0) _playback.PlayPcm(roger);
-                if (squelch.Length > 0) _playback.PlayPcm(squelch);
+                byte[] combinedSfx = SfxGenerator.CombineAudio(roger, squelch);
+                if (combinedSfx.Length > 0)
+                {
+                    _playback.PlayPcm(combinedSfx);
+                }
 
                 if (IsWhisperActive && SelectedWhisperPeer != null)
                 {
-                    var whisperEnd = LancomPacket.CreateWhisperPttEnd(_localId, SelectedWhisperPeer.Id);
-                    whisperEnd.SequenceNumber = Interlocked.Increment(ref _sequenceCounter);
-                    _transport.BroadcastPacket(whisperEnd);
-                    _transport.BroadcastPacket(whisperEnd);
-                    if (SelectedWhisperPeer.EndPoint != null)
+                    // Broadcast Whisper PTT End packet (burst 3 copies for network loss resilience)
+                    for (int i = 0; i < 3; i++)
                     {
-                        _transport.SendTo(whisperEnd, SelectedWhisperPeer.EndPoint);
+                        var whisperEnd = LancomPacket.CreateWhisperPttEnd(_localId, SelectedWhisperPeer.Id);
+                        whisperEnd.SequenceNumber = Interlocked.Increment(ref _sequenceCounter);
+                        _transport.BroadcastPacket(whisperEnd);
+                        if (SelectedWhisperPeer.EndPoint != null)
+                        {
+                            _transport.SendTo(whisperEnd, SelectedWhisperPeer.EndPoint);
+                        }
                     }
                 }
                 else
                 {
-                    // Broadcast PTT End packet (send 2 copies for network loss resilience)
-                    var pttEnd = new LancomPacket
+                    // Broadcast PTT End packet (burst 3 copies for network loss resilience)
+                    for (int i = 0; i < 3; i++)
                     {
-                        Type = MessageType.PttEnd,
-                        SequenceNumber = Interlocked.Increment(ref _sequenceCounter),
-                        Flags = _channelCrypto.IsEnabled ? LancomPacket.FlagEncrypted : (byte)0
-                    };
-                    _transport.BroadcastPacket(pttEnd);
-                    _transport.BroadcastPacket(pttEnd);
+                        var pttEnd = new LancomPacket
+                        {
+                            Type = MessageType.PttEnd,
+                            SequenceNumber = Interlocked.Increment(ref _sequenceCounter),
+                            Flags = _channelCrypto.IsEnabled ? LancomPacket.FlagEncrypted : (byte)0
+                        };
+                        _transport.BroadcastPacket(pttEnd);
+                    }
                 }
             }
         });
@@ -1190,9 +1220,10 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         // Check Whisper Voice Packets
         if (packet.IsWhisper || packet.Type == MessageType.WhisperVoice || packet.Type == MessageType.WhisperPttStart || packet.Type == MessageType.WhisperPttEnd)
         {
-
             if (packet.Type == MessageType.WhisperPttStart)
             {
+                _isIncomingWhisperActive = true;
+                _incomingTransmissionWatchdogTimer.Change(450, Timeout.Infinite);
                 _jitterBuffer.Reset();
                 _opusCodec.Reset();
                 _radioDsp.Reset();
@@ -1219,6 +1250,24 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             }
             else if (packet.Type == MessageType.WhisperVoice)
             {
+                _isIncomingWhisperActive = true;
+                _incomingTransmissionWatchdogTimer.Change(450, Timeout.Infinite);
+                if (!_isReceiving)
+                {
+                    lock (_incomingPcmLock)
+                    {
+                        _incomingSenderId = packet.SenderId;
+                        var peer = Peers.FirstOrDefault(p => p.Id == packet.SenderId);
+                        string senderName = peer != null ? peer.DisplayName : "Colleague";
+                        _incomingSenderName = senderName;
+                    }
+                    Application.Current?.Dispatcher?.Invoke(() =>
+                    {
+                        IsReceiving = true;
+                        IsReceivingWhisper = true;
+                        ActiveSpeakerName = $"🟣 WHISPER: {_incomingSenderName}";
+                    });
+                }
                 _jitterBuffer.Push(packet);
                 return;
             }
@@ -1252,6 +1301,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
         if (packet.Type == MessageType.PttStart)
         {
+            _isIncomingWhisperActive = false;
+            _incomingTransmissionWatchdogTimer.Change(450, Timeout.Infinite);
             _jitterBuffer.Reset();
             _opusCodec.Reset();
             _radioDsp.Reset();
@@ -1277,6 +1328,24 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         else if (packet.Type == MessageType.AudioData)
         {
+            _isIncomingWhisperActive = false;
+            _incomingTransmissionWatchdogTimer.Change(450, Timeout.Infinite);
+            if (!_isReceiving)
+            {
+                lock (_incomingPcmLock)
+                {
+                    _incomingSenderId = packet.SenderId;
+                    var peer = Peers.FirstOrDefault(p => p.Id == packet.SenderId);
+                    _incomingSenderName = peer != null ? peer.DisplayName : "Colleague";
+                }
+                Application.Current?.Dispatcher?.Invoke(() =>
+                {
+                    IsReceiving = true;
+                    IsReceivingWhisper = false;
+                    var peer = Peers.FirstOrDefault(p => p.Id == packet.SenderId);
+                    ActiveSpeakerName = peer != null ? $"{peer.DisplayName} (TRANSMITTING)" : "INCOMING TRANSMISSION";
+                });
+            }
             _jitterBuffer.Push(packet);
         }
         else if (packet.Type == MessageType.PttEnd)
@@ -1287,6 +1356,19 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void FinishIncomingTransmission(bool isWhisper)
     {
+        // Disarm watchdog timer
+        _incomingTransmissionWatchdogTimer.Change(Timeout.Infinite, Timeout.Infinite);
+
+        // Reset jitter buffer to drop stale/late packets
+        _jitterBuffer.Reset();
+
+        if (!_isReceiving && !_isReceivingWhisper)
+        {
+            return;
+        }
+
+        _isIncomingWhisperActive = false;
+
         byte[]? accumulatedBytes = null;
         string senderName = "Colleague";
 
@@ -1324,19 +1406,31 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             SpeechToTextService.EnqueueAudioSegment(senderName, accumulatedBytes, isWhisper);
         }
 
-        Application.Current?.Dispatcher?.Invoke(() =>
+        void ResetUi()
         {
             IsReceiving = false;
             IsReceivingWhisper = false;
             ActiveSpeakerLevel = 0.0f;
             ActiveSpeakerName = "Channel Idle";
-        });
+        }
 
-        // Play Roger Beep + Squelch tail
+        if (Application.Current?.Dispatcher?.CheckAccess() == true)
+        {
+            ResetUi();
+        }
+        else
+        {
+            Application.Current?.Dispatcher?.Invoke(ResetUi);
+        }
+
+        // Combine Roger Beep + Squelch tail into single audio stream
         byte[] roger = SfxGenerator.GenerateRogerBeep(_selectedRogerBeep, 0.4f);
         byte[] squelch = SfxGenerator.GenerateSquelchTail(0.25f);
-        if (roger.Length > 0) _playback.PlayPcm(roger);
-        if (squelch.Length > 0) _playback.PlayPcm(squelch);
+        byte[] combinedSfx = SfxGenerator.CombineAudio(roger, squelch);
+        if (combinedSfx.Length > 0)
+        {
+            _playback.PlayPcm(combinedSfx);
+        }
     }
 
     private void HandleJitterPacketReady(LancomPacket packet)
@@ -1374,8 +1468,10 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         var frame = new AudioFrame(pcm);
         Application.Current?.Dispatcher?.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
         {
-            ActiveSpeakerLevel = frame.RmsVolume * 2.5f;
-            IsReceiving = true;
+            if (_isReceiving || _isReceivingWhisper)
+            {
+                ActiveSpeakerLevel = frame.RmsVolume * 2.5f;
+            }
         });
 
         // Output to headset/speakers via WASAPI
@@ -2000,6 +2096,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        _incomingTransmissionWatchdogTimer?.Dispose();
         _processedMessageIds.Clear();
         FileTransferManager.Dispose();
         _subtitleFadeTimer?.Dispose();

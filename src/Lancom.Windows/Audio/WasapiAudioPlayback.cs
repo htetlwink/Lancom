@@ -64,8 +64,8 @@ public class WasapiAudioPlayback : IDisposable
         {
             if (!_isPlaying || _waveProvider == null) return;
 
-            // Prevent bufferbloat: if backlog exceeds 80ms, clear stale buffer
-            if (_waveProvider.BufferedDuration.TotalMilliseconds > 80)
+            // Prevent bufferbloat: if backlog exceeds 500ms, clear stale buffer
+            if (_waveProvider.BufferedDuration.TotalMilliseconds > 500)
             {
                 _waveProvider.ClearBuffer();
             }

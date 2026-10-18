@@ -833,14 +833,25 @@
 
                     <!-- Roger Beep Tone -->
                     <TextBlock Text="ROGER BEEP TONE (END OF TRANSMISSION)" FontSize="10" FontWeight="Bold" Foreground="#A5AAB8" Margin="0,0,0,4" />
-                    <ComboBox ItemsSource="{Binding RogerBeepOptions}" SelectedItem="{Binding SelectedRogerBeep}"
-                              Height="32" Margin="0,0,0,10">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Converter={StaticResource RogerBeepDescConverter}}" />
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
+                    <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Grid.Column="0" ItemsSource="{Binding RogerBeepOptions}" SelectedItem="{Binding SelectedRogerBeep}"
+                                  Height="32" Margin="0,0,8,0">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Converter={StaticResource RogerBeepDescConverter}}" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <Button Grid.Column="1" Content="TEST" Click="PreviewRogerBeep_Click"
+                                Background="#28323B" Foreground="{StaticResource BrushAccentEmerald}" 
+                                FontWeight="Bold" BorderThickness="1" BorderBrush="#00E676" 
+                                Padding="12,0" Height="32" FontSize="11" Cursor="Hand"
+                                ToolTip="Preview selected Roger Beep tone" />
+                    </Grid>
 
                     <!-- Corporate Relay IP -->
                     <TextBlock Text="CORPORATE RELAY HOST / IP (OPTIONAL)" FontSize="10" FontWeight="Bold" Foreground="#A5AAB8" Margin="0,0,0,4" />

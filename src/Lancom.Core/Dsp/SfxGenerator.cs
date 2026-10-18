@@ -82,12 +82,7 @@ public static class SfxGenerator
         byte[] pulse1 = GenerateSingleTone(400, 80, volume);
         byte[] silence = new byte[AudioConfig.SampleRate * 50 / 1000 * 2];
         byte[] pulse2 = GenerateSingleTone(400, 80, volume);
-
-        byte[] result = new byte[pulse1.Length + silence.Length + pulse2.Length];
-        Buffer.BlockCopy(pulse1, 0, result, 0, pulse1.Length);
-        Buffer.BlockCopy(silence, 0, result, pulse1.Length, silence.Length);
-        Buffer.BlockCopy(pulse2, 0, result, pulse1.Length + silence.Length, pulse2.Length);
-        return result;
+        return CombineAudio(pulse1, silence, pulse2);
     }
 
     public static byte[] GeneratePagerChime(float volume = 0.5f)
@@ -96,12 +91,7 @@ public static class SfxGenerator
         byte[] tone1 = GenerateSingleTone(880, 90, volume);
         byte[] silence = new byte[AudioConfig.SampleRate * 40 / 1000 * 2];
         byte[] tone2 = GenerateSingleTone(1320, 140, volume);
-
-        byte[] result = new byte[tone1.Length + silence.Length + tone2.Length];
-        Buffer.BlockCopy(tone1, 0, result, 0, tone1.Length);
-        Buffer.BlockCopy(silence, 0, result, tone1.Length, silence.Length);
-        Buffer.BlockCopy(tone2, 0, result, tone1.Length + silence.Length, tone2.Length);
-        return result;
+        return CombineAudio(tone1, silence, tone2);
     }
 
     public static byte[] GenerateMessageChime(float volume = 0.45f)
@@ -110,12 +100,7 @@ public static class SfxGenerator
         byte[] tone1 = GenerateSingleTone(1046, 60, volume);
         byte[] silence = new byte[AudioConfig.SampleRate * 30 / 1000 * 2];
         byte[] tone2 = GenerateSingleTone(1568, 100, volume);
-
-        byte[] result = new byte[tone1.Length + silence.Length + tone2.Length];
-        Buffer.BlockCopy(tone1, 0, result, 0, tone1.Length);
-        Buffer.BlockCopy(silence, 0, result, tone1.Length, silence.Length);
-        Buffer.BlockCopy(tone2, 0, result, tone1.Length + silence.Length, tone2.Length);
-        return result;
+        return CombineAudio(tone1, silence, tone2);
     }
 
     private static byte[] GenerateSingleTone(double frequency, int durationMs, float volume)
@@ -147,32 +132,17 @@ public static class SfxGenerator
     {
         byte[] tone1 = GenerateSingleTone(freq1, durMs1, volume);
         byte[] tone2 = GenerateSingleTone(freq2, durMs2, volume);
-
-        byte[] combined = new byte[tone1.Length + tone2.Length];
-        Buffer.BlockCopy(tone1, 0, combined, 0, tone1.Length);
-        Buffer.BlockCopy(tone2, 0, combined, tone1.Length, tone2.Length);
-        return combined;
+        return CombineAudio(tone1, tone2);
     }
 
     private static byte[] GenerateMultiTone(float volume, params (double freq, int durMs)[] tones)
     {
-        int totalLen = 0;
-        var buffers = new List<byte[]>(tones.Length);
-        foreach (var (freq, durMs) in tones)
+        var buffers = new byte[tones.Length][];
+        for (int i = 0; i < tones.Length; i++)
         {
-            byte[] b = GenerateSingleTone(freq, durMs, volume);
-            buffers.Add(b);
-            totalLen += b.Length;
+            buffers[i] = GenerateSingleTone(tones[i].freq, tones[i].durMs, volume);
         }
-
-        byte[] combined = new byte[totalLen];
-        int offset = 0;
-        foreach (var b in buffers)
-        {
-            Buffer.BlockCopy(b, 0, combined, offset, b.Length);
-            offset += b.Length;
-        }
-        return combined;
+        return CombineAudio(buffers);
     }
 
     private static byte[] GenerateFrequencySweep(double startFreq, double endFreq, int durationMs, float volume, bool exponentialDecay)
@@ -187,6 +157,10 @@ public static class SfxGenerator
             double t = (double)i / sampleCount;
             double freq = startFreq + (endFreq - startFreq) * t;
             currentPhase += 2.0 * Math.PI * freq / AudioConfig.SampleRate;
+            while (currentPhase >= 2.0 * Math.PI)
+            {
+                currentPhase -= 2.0 * Math.PI;
+            }
 
             double env = 1.0;
             if (i < fadeSamples) env = (double)i / fadeSamples;
@@ -209,12 +183,7 @@ public static class SfxGenerator
         byte[] pip1 = GenerateSingleTone(2100, 25, volume);
         byte[] silence = new byte[AudioConfig.SampleRate * 20 / 1000 * 2];
         byte[] pip2 = GenerateSingleTone(2100, 25, volume);
-
-        byte[] result = new byte[pip1.Length + silence.Length + pip2.Length];
-        Buffer.BlockCopy(pip1, 0, result, 0, pip1.Length);
-        Buffer.BlockCopy(silence, 0, result, pip1.Length, silence.Length);
-        Buffer.BlockCopy(pip2, 0, result, pip1.Length + silence.Length, pip2.Length);
-        return result;
+        return CombineAudio(pip1, silence, pip2);
     }
 
     private static byte[] GenerateHal9000(float volume)
@@ -229,6 +198,7 @@ public static class SfxGenerator
             double t = (double)i / sampleCount;
             double env = Math.Exp(-3.0 * t);
             if (i < fadeSamples) env *= (double)i / fadeSamples;
+            else if (i > sampleCount - fadeSamples) env *= (double)(sampleCount - i) / fadeSamples;
 
             float sample = (float)(Math.Sin(omega * i) * env * volume);
             pcm[i] = (short)Math.Clamp((int)(sample * 32767.0), short.MinValue, short.MaxValue);
@@ -237,11 +207,39 @@ public static class SfxGenerator
         return ConvertShortsToBytes(pcm);
     }
 
-    private static byte[] CombineAudio(byte[] first, byte[] second)
+    public static byte[] CombineAudio(params byte[][] clips)
     {
-        byte[] combined = new byte[first.Length + second.Length];
-        Buffer.BlockCopy(first, 0, combined, 0, first.Length);
-        Buffer.BlockCopy(second, 0, combined, first.Length, second.Length);
+        if (clips == null || clips.Length == 0)
+        {
+            return Array.Empty<byte>();
+        }
+
+        int totalLen = 0;
+        for (int i = 0; i < clips.Length; i++)
+        {
+            if (clips[i] != null)
+            {
+                totalLen += clips[i].Length;
+            }
+        }
+
+        if (totalLen == 0)
+        {
+            return Array.Empty<byte>();
+        }
+
+        byte[] combined = new byte[totalLen];
+        int offset = 0;
+        for (int i = 0; i < clips.Length; i++)
+        {
+            var clip = clips[i];
+            if (clip != null && clip.Length > 0)
+            {
+                Buffer.BlockCopy(clip, 0, combined, offset, clip.Length);
+                offset += clip.Length;
+            }
+        }
+
         return combined;
     }
 
