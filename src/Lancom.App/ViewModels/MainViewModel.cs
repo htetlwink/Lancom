@@ -34,6 +34,7 @@ public class PttKeyPreset
 
 public class LancomSettings
 {
+    public Guid LocalId { get; set; } = Guid.Empty;
     public string DisplayName { get; set; } = Environment.MachineName;
     public byte CurrentChannel { get; set; } = 1;
     public int TargetVKey { get; set; } = 0x14;
@@ -42,11 +43,13 @@ public class LancomSettings
     public string RelayHost { get; set; } = string.Empty;
     public string ChannelKey { get; set; } = string.Empty;
     public bool EnableSubtitles { get; set; } = true;
+    public Dictionary<string, string> PeerNicknames { get; set; } = new();
 }
 
 public class MainViewModel : INotifyPropertyChanged, IDisposable
 {
-    private readonly Guid _localId = Guid.NewGuid();
+    private Guid _localId;
+    private readonly ConcurrentDictionary<string, string> _peerNicknames = new();
     private string _displayName = Environment.MachineName;
     private byte _currentChannel = 1;
     private bool _isTransmitting;
@@ -245,6 +248,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 _transport.SendPresenceBeacon();
                 OnPropertyChanged(nameof(CurrentChannelDisplay));
                 OnPropertyChanged(nameof(CurrentChatTargetDisplay));
+                OnPropertyChanged(nameof(TacticalStatusBannerText));
                 RefreshPeersList();
                 RefreshDisplayMessages();
                 SaveSettings();
@@ -257,19 +261,67 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsTransmitting
     {
         get => _isTransmitting;
-        private set => SetField(ref _isTransmitting, value);
+        private set
+        {
+            if (SetField(ref _isTransmitting, value))
+            {
+                OnPropertyChanged(nameof(TacticalStatusBannerText));
+            }
+        }
     }
 
     public bool IsReceiving
     {
         get => _isReceiving;
-        private set => SetField(ref _isReceiving, value);
+        private set
+        {
+            if (SetField(ref _isReceiving, value))
+            {
+                OnPropertyChanged(nameof(TacticalStatusBannerText));
+            }
+        }
     }
 
     public string ActiveSpeakerName
     {
         get => _activeSpeakerName;
-        private set => SetField(ref _activeSpeakerName, value);
+        private set
+        {
+            if (SetField(ref _activeSpeakerName, value))
+            {
+                OnPropertyChanged(nameof(TacticalStatusBannerText));
+            }
+        }
+    }
+
+    public string TacticalStatusBannerText
+    {
+        get
+        {
+            if (IsTransmitting)
+            {
+                return IsWhisperActive && SelectedWhisperPeer != null
+                    ? $"🎙️ WHISPERING: {SelectedWhisperPeer.DisplayName.ToUpper()}"
+                    : $"🎙️ YOU ARE TRANSMITTING (CH {CurrentChannel:D2})";
+            }
+
+            if (IsReceivingWhisper)
+            {
+                return $"🟣 {_incomingSenderName} (WHISPERING)";
+            }
+
+            if (IsReceiving)
+            {
+                return $"🔊 {_incomingSenderName} (TRANSMITTING)";
+            }
+
+            if (!string.IsNullOrWhiteSpace(_activeSpeakerName) && _activeSpeakerName != "Channel Idle")
+            {
+                return _activeSpeakerName;
+            }
+
+            return $"🟢 Channel {CurrentChannel:D2} Idle";
+        }
     }
 
     public float ActiveSpeakerLevel
@@ -414,6 +466,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 OnPropertyChanged(nameof(WhisperTargetName));
                 OnPropertyChanged(nameof(WhisperBannerVisibility));
                 OnPropertyChanged(nameof(CurrentChatTargetDisplay));
+                OnPropertyChanged(nameof(TacticalStatusBannerText));
                 RefreshDisplayMessages();
             }
         }
@@ -426,7 +479,13 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsReceivingWhisper
     {
         get => _isReceivingWhisper;
-        private set => SetField(ref _isReceivingWhisper, value);
+        private set
+        {
+            if (SetField(ref _isReceivingWhisper, value))
+            {
+                OnPropertyChanged(nameof(TacticalStatusBannerText));
+            }
+        }
     }
 
     public void SetWhisperPeer(PeerInfo peer)
@@ -500,13 +559,30 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public MainViewModel()
     {
         _peerManager = new PeerManager();
+        _peerManager.AliasResolver = (id, machineName) =>
+        {
+            if (_peerNicknames.TryGetValue(id.ToString(), out var alias) && !string.IsNullOrWhiteSpace(alias))
+                return alias;
+            if (!string.IsNullOrWhiteSpace(machineName) && _peerNicknames.TryGetValue(machineName, out var aliasByName) && !string.IsNullOrWhiteSpace(aliasByName))
+                return aliasByName;
+            return null;
+        };
+
         _opusCodec = new ConcentusOpusCodec();
         _radioDsp = new RadioDsp { EnableRadioEffect = _enableRadioFilter };
         _capture = new WasapiAudioCapture();
         _playback = new WasapiAudioPlayback();
-        _transport = new WindowsUdpTransport(_localId, _displayName, _peerManager);
         _pttHook = new RawInputPttHook();
         _jitterBuffer = new JitterBuffer(1);
+
+        LoadSettings();
+        if (_localId == Guid.Empty)
+        {
+            _localId = Guid.NewGuid();
+            SaveSettings();
+        }
+
+        _transport = new WindowsUdpTransport(_localId, _displayName, _peerManager);
 
         // Initialize Speech-to-Text subtitle fade timer
         _subtitleFadeTimer = new Timer(_ =>
@@ -557,7 +633,6 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         FileTransferManager.OnTransferFailed += HandleTransferFailed;
         FileTransferManager.OnMissingChunksRequested += HandleMissingChunksRequested;
 
-        LoadSettings();
         if (_selectedPttPreset == null)
         {
             SelectedPttPreset = PttKeyPresets[0];
@@ -861,11 +936,18 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
                     Application.Current?.Dispatcher?.Invoke(() =>
                     {
+                        var peer = _peerManager.GetPeer(packet.SenderId);
+                        string senderDisplayName = peer != null ? peer.DisplayName : textPayload.SenderName;
+                        if (peer == null && _peerNicknames.TryGetValue(packet.SenderId.ToString(), out var alias))
+                        {
+                            senderDisplayName = alias;
+                        }
+
                         var msg = new ChatMessage
                         {
                             Id = textPayload.MessageId,
                             SenderId = packet.SenderId,
-                            SenderName = textPayload.SenderName,
+                            SenderName = senderDisplayName,
                             ChannelId = packet.ChannelId,
                             TargetUserId = packet.TargetUserId,
                             Text = textPayload.Text,
@@ -946,13 +1028,18 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                             return;
                         }
 
-                        _processedMessageIds[offer.TransferId] = Environment.TickCount64;
+                        var peer = _peerManager.GetPeer(packet.SenderId);
+                        string senderDisplayName = peer != null ? peer.DisplayName : offer.SenderName;
+                        if (peer == null && _peerNicknames.TryGetValue(packet.SenderId.ToString(), out var alias))
+                        {
+                            senderDisplayName = alias;
+                        }
 
                         var fileMsg = new ChatMessage
                         {
                             Id = offer.TransferId,
                             SenderId = packet.SenderId,
-                            SenderName = offer.SenderName,
+                            SenderName = senderDisplayName,
                             ChannelId = packet.ChannelId,
                             TargetUserId = packet.TargetUserId,
                             Text = offer.Category switch
@@ -1368,6 +1455,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             else
             {
                 existing.DisplayName = active.DisplayName;
+                existing.CustomAlias = active.CustomAlias;
+                existing.MachineName = active.MachineName;
                 existing.ChannelId = active.ChannelId;
                 existing.IsTransmitting = active.IsTransmitting;
                 existing.EndPoint = active.EndPoint;
@@ -1458,6 +1547,15 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 var s = JsonSerializer.Deserialize<LancomSettings>(json);
                 if (s != null)
                 {
+                    if (s.LocalId != Guid.Empty) _localId = s.LocalId;
+                    if (s.PeerNicknames != null)
+                    {
+                        _peerNicknames.Clear();
+                        foreach (var kvp in s.PeerNicknames)
+                        {
+                            _peerNicknames[kvp.Key] = kvp.Value;
+                        }
+                    }
                     if (!string.IsNullOrWhiteSpace(s.DisplayName)) _displayName = s.DisplayName;
                     _currentChannel = s.CurrentChannel;
                     _enableRadioFilter = s.EnableRadioFilter;
@@ -1506,6 +1604,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             string file = Path.Combine(dir, "settings.json");
             var s = new LancomSettings
             {
+                LocalId = _localId,
                 DisplayName = DisplayName,
                 CurrentChannel = CurrentChannel,
                 TargetVKey = SelectedPttPreset?.VKey ?? 0x14,
@@ -1513,11 +1612,48 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
                 EnableRadioFilter = EnableRadioFilter,
                 RelayHost = RelayHost,
                 ChannelKey = ChannelKey,
-                EnableSubtitles = EnableSubtitles
+                EnableSubtitles = EnableSubtitles,
+                PeerNicknames = new Dictionary<string, string>(_peerNicknames)
             };
             File.WriteAllText(file, JsonSerializer.Serialize(s));
         }
         catch { }
+    }
+
+    public void RenamePeer(Guid peerId, string newNickname)
+    {
+        string trimmed = newNickname?.Trim() ?? string.Empty;
+        var peer = _peerManager.GetPeer(peerId);
+
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            _peerNicknames.TryRemove(peerId.ToString(), out _);
+            if (peer != null && !string.IsNullOrWhiteSpace(peer.MachineName))
+            {
+                _peerNicknames.TryRemove(peer.MachineName, out _);
+            }
+            _peerManager.SetPeerAlias(peerId, null);
+        }
+        else
+        {
+            _peerNicknames[peerId.ToString()] = trimmed;
+            if (peer != null && !string.IsNullOrWhiteSpace(peer.MachineName))
+            {
+                _peerNicknames[peer.MachineName] = trimmed;
+            }
+            _peerManager.SetPeerAlias(peerId, trimmed);
+        }
+
+        SaveSettings();
+        RefreshPeersList();
+        OnPropertyChanged(nameof(WhisperTargetName));
+        OnPropertyChanged(nameof(TacticalStatusBannerText));
+    }
+
+    public string GetPeerNickname(Guid peerId)
+    {
+        if (_peerNicknames.TryGetValue(peerId.ToString(), out var alias)) return alias;
+        return string.Empty;
     }
 
     #region Messaging & File Transfer Methods

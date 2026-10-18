@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private TrayIconManager? _trayManager;
     private bool _isExplicitExit;
     private bool _hasShownTrayBalloon;
+    private PeerInfo? _peerBeingRenamed;
 
     public MainWindow()
     {
@@ -377,6 +378,13 @@ public partial class MainWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Escape && RenameModalOverlay.Visibility == Visibility.Visible)
+        {
+            CancelRename_Click(sender, e);
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.Escape && ViewModel != null && ViewModel.IsSettingsOpen)
         {
             ViewModel.IsSettingsOpen = false;
@@ -399,6 +407,59 @@ public partial class MainWindow : Window
                 }
             }
             catch { }
+        }
+    }
+
+    private void RenamePeer_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.DataContext is PeerInfo peer)
+        {
+            _peerBeingRenamed = peer;
+            RenameMachineTargetText.Text = $"Host / Machine: {peer.MachineName}";
+            RenameInputBox.Text = peer.HasCustomAlias ? peer.CustomAlias : peer.DisplayName;
+            RenameModalOverlay.Visibility = Visibility.Visible;
+            RenameInputBox.Focus();
+            RenameInputBox.SelectAll();
+        }
+    }
+
+    private void SaveRename_Click(object sender, RoutedEventArgs e)
+    {
+        if (_peerBeingRenamed != null && ViewModel != null)
+        {
+            ViewModel.RenamePeer(_peerBeingRenamed.Id, RenameInputBox.Text);
+        }
+        RenameModalOverlay.Visibility = Visibility.Collapsed;
+        _peerBeingRenamed = null;
+    }
+
+    private void ResetRename_Click(object sender, RoutedEventArgs e)
+    {
+        if (_peerBeingRenamed != null && ViewModel != null)
+        {
+            ViewModel.RenamePeer(_peerBeingRenamed.Id, string.Empty);
+        }
+        RenameModalOverlay.Visibility = Visibility.Collapsed;
+        _peerBeingRenamed = null;
+    }
+
+    private void CancelRename_Click(object sender, RoutedEventArgs e)
+    {
+        RenameModalOverlay.Visibility = Visibility.Collapsed;
+        _peerBeingRenamed = null;
+    }
+
+    private void RenameInputBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            SaveRename_Click(sender, e);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            CancelRename_Click(sender, e);
+            e.Handled = true;
         }
     }
 

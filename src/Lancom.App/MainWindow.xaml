@@ -18,6 +18,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <utils:Base64ImageConverter x:Key="Base64ImageConverter" />
         <utils:NullOrEmptyToVisibilityConverter x:Key="NullOrEmptyToVisibilityConverter" />
+        <utils:RogerBeepDescriptionConverter x:Key="RogerBeepDescConverter" />
 
         <Style x:Key="ChannelButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="#252834" />
@@ -83,32 +84,12 @@
                         </Border>
                     </StackPanel>
 
-                    <!-- Tactical Live Status -->
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <!-- Transmit Pulse Dot -->
-                        <Ellipse Width="10" Height="10" Margin="0,0,8,0">
-                            <Ellipse.Style>
-                                <Style TargetType="Ellipse">
-                                    <Setter Property="Fill" Value="#555866" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsTransmitting}" Value="True">
-                                            <Setter Property="Fill" Value="{StaticResource BrushAccentAmber}" />
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding IsReceivingWhisper}" Value="True">
-                                            <Setter Property="Fill" Value="#D946EF" />
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding IsReceiving}" Value="True">
-                                            <Setter Property="Fill" Value="{StaticResource BrushAccentEmerald}" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Ellipse.Style>
-                        </Ellipse>
-
-                        <TextBlock Text="{Binding ActiveSpeakerName}" 
-                                   Foreground="{StaticResource BrushTextPrimary}" 
-                                   FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"
-                                   TextTrimming="CharacterEllipsis" MaxWidth="140" />
+                    <!-- Center Header / Drag Area -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <TextBlock Text="LANCOM INTERCOM" 
+                                   Foreground="{StaticResource BrushTextMuted}" 
+                                   FontWeight="Bold" FontSize="11" VerticalAlignment="Center"
+                                   Opacity="0.75" />
                     </StackPanel>
 
                     <!-- Window Control Micro-Buttons & Banner Settings Button -->
@@ -197,6 +178,83 @@
                                      Foreground="{StaticResource BrushAccentAmber}" 
                                      Background="Transparent" BorderThickness="0" />
                     </Grid>
+
+                    <!-- Tactical Live Transmission Status Banner (Above HOLD TO TALK) -->
+                    <Border CornerRadius="8" Padding="12,7" Margin="0,0,0,10">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="#171A23" />
+                                <Setter Property="BorderBrush" Value="#292D3B" />
+                                <Setter Property="BorderThickness" Value="1" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsTransmitting}" Value="True">
+                                        <Setter Property="Background" Value="#38220A" />
+                                        <Setter Property="BorderBrush" Value="{StaticResource BrushAccentAmber}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsReceivingWhisper}" Value="True">
+                                        <Setter Property="Background" Value="#2D133B" />
+                                        <Setter Property="BorderBrush" Value="#C026D3" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsReceiving}" Value="True">
+                                        <Setter Property="Background" Value="#0D2C1C" />
+                                        <Setter Property="BorderBrush" Value="{StaticResource BrushAccentEmerald}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            
+                            <!-- Transmit / Receive Pulse Indicator -->
+                            <Ellipse Grid.Column="0" Width="9" Height="9" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="#555866" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsTransmitting}" Value="True">
+                                                <Setter Property="Fill" Value="{StaticResource BrushAccentAmber}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsReceivingWhisper}" Value="True">
+                                                <Setter Property="Fill" Value="#E879F9" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsReceiving}" Value="True">
+                                                <Setter Property="Fill" Value="{StaticResource BrushAccentEmerald}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+
+                            <TextBlock Grid.Column="1" Text="{Binding TacticalStatusBannerText}" 
+                                       FontWeight="Bold" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsTransmitting}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource BrushAccentAmber}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsReceivingWhisper}" Value="True">
+                                                <Setter Property="Foreground" Value="#F5D0FE" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsReceiving}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource BrushAccentEmerald}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <!-- Channel Badge -->
+                            <Border Grid.Column="2" Background="#12141C" CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding CurrentChannelDisplay}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource BrushTextMuted}" />
+                            </Border>
+                        </Grid>
+                    </Border>
 
                     <!-- Big Tactile Push-To-Talk Button -->
                     <Border CornerRadius="12" Cursor="Hand" Height="58"
@@ -353,7 +411,7 @@
                                         </Style>
                                     </Button.Style>
                                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                        <TextBlock Text="👥 ROSTER" />
+                                        <TextBlock Text="👥 ONLINE COLLEAGUES" />
                                         <TextBlock Text="{Binding OnlinePeerCount, StringFormat=' ({0})'}" />
                                     </StackPanel>
                                 </Button>
@@ -406,17 +464,7 @@
                             <!-- TAB 1: ONLINE COLLEAGUES ROSTER                -->
                             <!-- ============================================== -->
                             <Grid Visibility="{Binding IsRosterTabActive, Converter={StaticResource BoolToVis}}">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="*" />
-                                </Grid.RowDefinitions>
-
-                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="ONLINE COLLEAGUES" FontSize="11" FontWeight="Bold" Foreground="{StaticResource BrushTextMuted}" />
-                                    <TextBlock Text="{Binding OnlinePeerCount, StringFormat=' ({0})'}" FontSize="11" Foreground="{StaticResource BrushAccentEmerald}" FontWeight="Bold" />
-                                </StackPanel>
-
-                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
                                     <ItemsControl ItemsSource="{Binding Peers}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
@@ -443,18 +491,29 @@
                                                             </Ellipse.Style>
                                                         </Ellipse>
                                                         
-                                                        <!-- Display Name + AFK status -->
-                                                        <TextBlock Grid.Column="1" Text="{Binding StatusDisplay}" 
-                                                                   Foreground="{StaticResource BrushTextPrimary}" FontSize="12" 
-                                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                        <!-- Display Name + AFK status & optional original machine name -->
+                                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding StatusDisplay}" 
+                                                                       Foreground="{StaticResource BrushTextPrimary}" FontSize="12" 
+                                                                       FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Text="{Binding OriginalNameDisplay, StringFormat=' {0}'}" 
+                                                                       Foreground="{StaticResource BrushTextMuted}" FontSize="10" 
+                                                                       VerticalAlignment="Center" Margin="4,0,0,0"
+                                                                       Visibility="{Binding HasCustomAlias, Converter={StaticResource BoolToVis}}" />
+                                                        </StackPanel>
                                                         
                                                         <!-- Channel Tag -->
                                                         <TextBlock Grid.Column="2" Text="{Binding ChannelId, StringFormat='CH {0:D2}'}" 
                                                                    Foreground="{StaticResource BrushTextMuted}" FontSize="11" 
                                                                    VerticalAlignment="Center" Margin="0,0,8,0" />
                                                         
-                                                        <!-- Targeted Mention / Page & Whisper Buttons -->
+                                                        <!-- Targeted Mention / Page, Rename & Whisper Buttons -->
                                                         <StackPanel Grid.Column="3" Orientation="Horizontal">
+                                                            <Button Content="✏️" Click="RenamePeer_Click"
+                                                                    Background="#1E2330" Foreground="{StaticResource BrushTextMuted}" 
+                                                                    BorderBrush="#363C4E" BorderThickness="1"
+                                                                    Padding="5,2" FontSize="10" Cursor="Hand" Margin="0,0,4,0"
+                                                                    ToolTip="Edit nickname for this colleague (Persistent)" />
                                                             <Button Content="🟣 WHISPER" Click="WhisperPeer_Click"
                                                                     Background="#2A1733" Foreground="#E879F9" 
                                                                     BorderBrush="#4C255E" BorderThickness="1"
@@ -775,7 +834,13 @@
                     <!-- Roger Beep Tone -->
                     <TextBlock Text="ROGER BEEP TONE (END OF TRANSMISSION)" FontSize="10" FontWeight="Bold" Foreground="#A5AAB8" Margin="0,0,0,4" />
                     <ComboBox ItemsSource="{Binding RogerBeepOptions}" SelectedItem="{Binding SelectedRogerBeep}"
-                              Height="32" Margin="0,0,0,10" />
+                              Height="32" Margin="0,0,0,10">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Converter={StaticResource RogerBeepDescConverter}}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
 
                     <!-- Corporate Relay IP -->
                     <TextBlock Text="CORPORATE RELAY HOST / IP (OPTIONAL)" FontSize="10" FontWeight="Bold" Foreground="#A5AAB8" Margin="0,0,0,4" />
@@ -827,6 +892,45 @@
                             ToolTip="Completely exit the application (instead of minimizing to system tray)" />
                 </StackPanel>
             </Border>
+
+            <!-- ======================================================== -->
+            <!-- RENAME PEER MODAL OVERLAY (PERSISTENT NICKNAME)          -->
+            <!-- ======================================================== -->
+            <Grid x:Name="RenameModalOverlay" Visibility="Collapsed" Background="#D90B0D13">
+                <Border Width="340" HorizontalAlignment="Center" VerticalAlignment="Center"
+                        Background="#161820" BorderBrush="#363A48" BorderThickness="1"
+                        CornerRadius="10" Padding="18">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="25" ShadowDepth="4" Direction="270" Color="#000000" Opacity="0.85" />
+                    </Border.Effect>
+                    <StackPanel>
+                        <TextBlock Text="✏️ EDIT COLLEAGUE NICKNAME" FontWeight="Bold" FontSize="12" Foreground="{StaticResource BrushAccentEmerald}" Margin="0,0,0,6" />
+                        <TextBlock x:Name="RenameMachineTargetText" Text="Original Host: Laptop-A" FontSize="11" Foreground="{StaticResource BrushTextMuted}" Margin="0,0,0,12" />
+                        
+                        <TextBlock Text="DISPLAY NAME / NICKNAME" FontSize="10" FontWeight="Bold" Foreground="#A5AAB8" Margin="0,0,0,4" />
+                        <TextBox x:Name="RenameInputBox" Height="32" Margin="0,0,0,6" KeyDown="RenameInputBox_KeyDown" />
+                        <TextBlock Text="This name will persist across app restarts on your machine." FontSize="10" Foreground="#656978" Margin="0,0,0,16" />
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="RESET" Click="ResetRename_Click"
+                                    Background="Transparent" Foreground="#8A8F9E" BorderThickness="0"
+                                    FontSize="10" HorizontalAlignment="Left" Cursor="Hand"
+                                    ToolTip="Reset back to machine name" />
+                            <Button Grid.Column="1" Content="CANCEL" Click="CancelRename_Click"
+                                    Background="#252834" Foreground="#8A8F9E" BorderThickness="0"
+                                    Padding="12,6" FontSize="11" FontWeight="Bold" Margin="0,0,8,0" Cursor="Hand" />
+                            <Button Grid.Column="2" Content="SAVE" Click="SaveRename_Click"
+                                    Background="{StaticResource BrushAccentEmerald}" Foreground="#121316"
+                                    BorderThickness="0" Padding="16,6" FontSize="11" FontWeight="Bold" Cursor="Hand" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </Grid>
         </Grid>
         </Grid>
     </Border>

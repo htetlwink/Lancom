@@ -8,6 +8,8 @@ public class PeerInfo : INotifyPropertyChanged
 {
     private Guid _id;
     private string _displayName = string.Empty;
+    private string _customAlias = string.Empty;
+    private string _machineName = string.Empty;
     private IPEndPoint _endPoint = null!;
     private byte _channelId = 1;
     private DateTime _lastSeen = DateTime.UtcNow;
@@ -22,14 +24,60 @@ public class PeerInfo : INotifyPropertyChanged
         set => SetField(ref _id, value);
     }
 
-    public string DisplayName
+    public string CustomAlias
     {
-        get => _displayName;
+        get => _customAlias;
         set
         {
+            if (SetField(ref _customAlias, value))
+            {
+                OnPropertyChanged(nameof(DisplayName));
+                OnPropertyChanged(nameof(StatusDisplay));
+                OnPropertyChanged(nameof(HasCustomAlias));
+                OnPropertyChanged(nameof(OriginalNameDisplay));
+            }
+        }
+    }
+
+    public string MachineName
+    {
+        get => _machineName;
+        set
+        {
+            if (SetField(ref _machineName, value))
+            {
+                OnPropertyChanged(nameof(DisplayName));
+                OnPropertyChanged(nameof(StatusDisplay));
+                OnPropertyChanged(nameof(OriginalNameDisplay));
+            }
+        }
+    }
+
+    public bool HasCustomAlias => !string.IsNullOrWhiteSpace(_customAlias);
+
+    public string OriginalNameDisplay => HasCustomAlias && !string.IsNullOrWhiteSpace(_machineName) && !string.Equals(_customAlias, _machineName, StringComparison.OrdinalIgnoreCase)
+        ? $"({_machineName})"
+        : string.Empty;
+
+    public string DisplayName
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(_customAlias)) return _customAlias;
+            if (!string.IsNullOrWhiteSpace(_displayName)) return _displayName;
+            if (!string.IsNullOrWhiteSpace(_machineName)) return _machineName;
+            return "Colleague";
+        }
+        set
+        {
+            if (string.IsNullOrWhiteSpace(_machineName) && !string.IsNullOrWhiteSpace(value))
+            {
+                _machineName = value;
+            }
             if (SetField(ref _displayName, value))
             {
                 OnPropertyChanged(nameof(StatusDisplay));
+                OnPropertyChanged(nameof(OriginalNameDisplay));
             }
         }
     }

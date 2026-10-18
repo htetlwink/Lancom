@@ -6,7 +6,7 @@ namespace Lancom.App.Utils;
 
 public static class ImageThumbnailHelper
 {
-    public static string? CreateThumbnailBase64(string imagePath, int maxDimension = 140)
+    public static string? CreateThumbnailBase64(string imagePath, int maxDimension = 100)
     {
         try
         {
@@ -22,7 +22,7 @@ public static class ImageThumbnailHelper
             var target = new TransformedBitmap(frame, new ScaleTransform(scale, scale));
 
             using var memStream = new MemoryStream();
-            var encoder = new JpegBitmapEncoder { QualityLevel = 75 };
+            var encoder = new JpegBitmapEncoder { QualityLevel = 60 };
             encoder.Frames.Add(BitmapFrame.Create(target));
             encoder.Save(memStream);
 

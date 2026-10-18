@@ -9,6 +9,8 @@ public class PeerManager : IDisposable
     private readonly ConcurrentDictionary<Guid, PeerInfo> _peers = new();
     private readonly Timer _cleanupTimer;
 
+    public Func<Guid, string, string?>? AliasResolver { get; set; }
+
     public event Action<PeerInfo>? OnPeerJoined;
     public event Action<PeerInfo>? OnPeerLeft;
     public event Action<PeerInfo>? OnPeerUpdated;
@@ -28,6 +30,8 @@ public class PeerManager : IDisposable
             afkMinutes = parsedMinutes;
         }
 
+        string? alias = AliasResolver?.Invoke(id, displayName);
+
         bool isNew = false;
         var peer = _peers.AddOrUpdate(id,
             addValueFactory: key =>
@@ -37,6 +41,8 @@ public class PeerManager : IDisposable
                 {
                     Id = key,
                     DisplayName = displayName,
+                    MachineName = displayName,
+                    CustomAlias = alias ?? string.Empty,
                     EndPoint = endPoint,
                     ChannelId = channelId,
                     IsAfk = isAfk,
@@ -47,6 +53,11 @@ public class PeerManager : IDisposable
             updateValueFactory: (key, existing) =>
             {
                 existing.DisplayName = displayName;
+                existing.MachineName = displayName;
+                if (!string.IsNullOrWhiteSpace(alias))
+                {
+                    existing.CustomAlias = alias;
+                }
                 existing.EndPoint = endPoint;
                 existing.ChannelId = channelId;
                 existing.IsAfk = isAfk;
@@ -61,6 +72,15 @@ public class PeerManager : IDisposable
         }
         else
         {
+            OnPeerUpdated?.Invoke(peer);
+        }
+    }
+
+    public void SetPeerAlias(Guid id, string? alias)
+    {
+        if (_peers.TryGetValue(id, out var peer))
+        {
+            peer.CustomAlias = alias ?? string.Empty;
             OnPeerUpdated?.Invoke(peer);
         }
     }

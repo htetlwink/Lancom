@@ -79,7 +79,7 @@ public class FileTransferManager : IDisposable
         }
 
         Directory.CreateDirectory(_downloadDir);
-        _auditTimer = new Timer(AuditInboundTransfers, null, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
+        _auditTimer = new Timer(AuditInboundTransfers, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(250));
     }
 
     public static FileCategory CategorizeFile(string extension)
@@ -171,8 +171,8 @@ public class FileTransferManager : IDisposable
             double progress = Math.Min(0.95, (double)(i + 1) / transfer.TotalChunks);
             OnTransferProgress?.Invoke(transferId, progress);
 
-            // Adaptive LAN pacing: 1ms delay every 2 chunks avoids overwhelming Wi-Fi links and UDP buffers
-            if (i % 2 == 0)
+            // Adaptive LAN pacing: Burst send 8 chunks before yielding to prevent socket buffer exhaustion while avoiding 15ms Windows timer throttling
+            if (i % 8 == 0)
             {
                 await Task.Delay(1, ct);
             }
@@ -181,7 +181,8 @@ public class FileTransferManager : IDisposable
         if (ct.IsCancellationRequested || transfer.IsCancelled) return;
 
         // Active reliability handshake: Wait for Receiver's FileChunkAck(isComplete: true)
-        int maxRetries = 15; // 15 * 800ms ≈ 12 seconds max timeout
+        int timeoutSeconds = Math.Max(30, (int)(transfer.FileSize / (150 * 1024)) + 15);
+        int maxRetries = Math.Max(25, timeoutSeconds * 1000 / 800);
         int retry = 0;
 
         while (!transfer.IsCompleted && !transfer.IsCancelled && !ct.IsCancellationRequested && retry < maxRetries)
@@ -308,7 +309,6 @@ public class FileTransferManager : IDisposable
                     long offset = (long)chunkIndex * transfer.ChunkSize;
                     transfer.Stream.Seek(offset, SeekOrigin.Begin);
                     transfer.Stream.Write(chunkData, 0, chunkData.Length);
-                    transfer.Stream.Flush();
                 }
 
                 transfer.ReceivedChunks[chunkIndex] = true;
@@ -321,6 +321,7 @@ public class FileTransferManager : IDisposable
 
                 if (isComplete)
                 {
+                    transfer.Stream?.Flush();
                     transfer.Stream?.Dispose();
                     transfer.Stream = null;
 
@@ -406,7 +407,7 @@ public class FileTransferManager : IDisposable
                 await sendChunkCallback(index, transfer.TotalChunks, chunkData);
 
                 count++;
-                if (count % 2 == 0)
+                if (count % 8 == 0)
                 {
                     await Task.Delay(1, ct);
                 }
@@ -434,7 +435,7 @@ public class FileTransferManager : IDisposable
                     if (inbound.ReceivedChunkCount < inbound.TotalChunks)
                     {
                         var referenceTime = inbound.ReceivedChunkCount > 0 ? inbound.LastActivityTime : inbound.StartTime;
-                        if ((now - referenceTime).TotalMilliseconds >= 700)
+                        if ((now - referenceTime).TotalMilliseconds >= 300)
                         {
                             if (inbound.MissingRequestCount < 30)
                             {
@@ -458,7 +459,7 @@ public class FileTransferManager : IDisposable
             if (!inbound.ReceivedChunks[i])
             {
                 missing.Add(i);
-                if (missing.Count >= 100) break;
+                if (missing.Count >= 150) break;
             }
         }
 
